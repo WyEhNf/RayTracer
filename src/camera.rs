@@ -1,5 +1,5 @@
 use crate::ray::Ray;
-use crate::utils::degrees_to_radians;
+use crate::utils::{degrees_to_radians, random_range};
 use crate::vec3::{Point3, Vec3, cross, random_in_unit_disk, unit_vector};
 
 pub struct Camera {
@@ -12,6 +12,8 @@ pub struct Camera {
     #[allow(dead_code)]
     w: Vec3,
     lens_radius: f64,
+    time0: f64,
+    time1: f64,
 }
 
 impl Camera {
@@ -24,6 +26,8 @@ impl Camera {
         aspect_ratio: f64,
         defocus_angle: f64,
         focus_dist: f64,
+        time0: f64,
+        time1: f64,
     ) -> Self {
         let theta = degrees_to_radians(vfov);
         let h = (theta / 2.0).tan();
@@ -51,18 +55,22 @@ impl Camera {
             v,
             w,
             lens_radius,
+            time0,
+            time1,
         }
     }
 
     pub fn get_ray(&self, s: f64, t: f64) -> Ray {
         let rd = self.lens_radius * random_in_unit_disk();
         let offset = self.u * rd.x + self.v * rd.y;
+        let ray_time = random_range(self.time0, self.time1);
 
-        Ray::new(
+        Ray::new_at_time(
             self.origin + offset,
             self.lower_left_corner + s * self.horizontal + t * self.vertical
                 - self.origin
                 - offset,
+            ray_time,
         )
     }
 }

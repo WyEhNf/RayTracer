@@ -1,4 +1,4 @@
-use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub};
+use std::ops::{Add, AddAssign, Div, Index, Mul, MulAssign, Neg, Sub};
 
 use crate::utils::{random_double, random_range};
 
@@ -28,6 +28,18 @@ impl Vec3 {
     pub fn near_zero(&self) -> bool {
         let s = 1e-8;
         self.x.abs() < s && self.y.abs() < s && self.z.abs() < s
+    }
+}
+
+impl Index<usize> for Vec3 {
+    type Output = f64;
+    fn index(&self, index: usize) -> &f64 {
+        match index {
+            0 => &self.x,
+            1 => &self.y,
+            2 => &self.z,
+            _ => panic!("Vec3 index out of bounds: {}", index),
+        }
     }
 }
 

@@ -14,3 +14,7 @@ pub fn random_double() -> f64 {
 pub fn random_range(min: f64, max: f64) -> f64 {
     rand::thread_rng().gen_range(min..max)
 }
+
+pub fn random_int(min: i32, max: i32) -> i32 {
+    random_range(min as f64, (max + 1) as f64) as i32
+}

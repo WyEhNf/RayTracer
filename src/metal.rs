@@ -25,7 +25,7 @@ impl Material for Metal {
         if dot(&scattered_dir, &rec.normal) > 0.0 {
             Some(ScatterRecord {
                 attenuation: self.albedo,
-                scattered_ray: Ray::new(rec.p, scattered_dir),
+                scattered_ray: Ray::new_at_time(rec.p, scattered_dir, ray.time),
             })
         } else {
             None
