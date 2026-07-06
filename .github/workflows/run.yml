@@ -1,0 +1,39 @@
+on:
+  push:
+    tags:
+      - "*"
+
+name: CI # Continuous Integration
+
+jobs:
+  lint:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout 🛎️
+      - uses: dtolnay/rust-toolchain@stable
+        name: Setup Cargo Toolchain 🛎️
+      - name: Running Tests 🚀
+        run: cargo test --all-features
+      - name: Check Code Format 🔧
+        run: cargo fmt -- --check
+      - name: Lint with Clippy 🔧
+        run: cargo clippy --all-targets --all-features -- -D warnings
+  build:
+    name: Build and Upload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        name: Checkout 🛎️
+      - uses: dtolnay/rust-toolchain@stable
+        name: Setup Cargo Toolchain 🛎️
+      - name: Build 🔧
+        run: cargo build --release --all-features
+      - name: Run 🔧
+        run: cargo run --release
+      - uses: actions/upload-artifact@v4
+        name: Upload Artifacts 🚀
+        with:
+          name: output
+          path: output/
