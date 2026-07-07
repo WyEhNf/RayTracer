@@ -129,4 +129,12 @@ impl Hittable for FlipFace {
     fn bounding_box(&self, time0: f64, time1: f64) -> Option<Aabb> {
         self.ptr.bounding_box(time0, time1)
     }
+
+    fn pdf_value(&self, origin: &Point3, direction: &Vec3) -> f64 {
+        self.ptr.pdf_value(origin, direction)
+    }
+
+    fn random(&self, origin: &Point3) -> Vec3 {
+        self.ptr.random(origin)
+    }
 }

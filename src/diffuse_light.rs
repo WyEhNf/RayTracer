@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
-use crate::material::{Material, ScatterRecord};
+use crate::material::{Material, ScatterType};
 use crate::ray::Ray;
 use crate::texture::Texture;
 use crate::vec3::Color;
@@ -17,7 +17,7 @@ impl DiffuseLight {
 }
 
 impl Material for DiffuseLight {
-    fn scatter(&self, _ray: &Ray, _rec: &HitRecord) -> Option<ScatterRecord> {
+    fn scatter(&self, _ray: &Ray, _rec: &HitRecord) -> Option<ScatterType> {
         None
     }
 

@@ -1,4 +1,5 @@
-use crate::vec3::{Point3, Vec3, dot, unit_vector};
+use crate::texture::Texture;
+use crate::vec3::{Color, Point3, Vec3, dot, unit_vector};
 
 pub struct Perlin {
     ranvec: [Vec3; 256],
@@ -86,9 +87,6 @@ impl Perlin {
         accum.abs()
     }
 }
-
-use crate::texture::Texture;
-use crate::vec3::Color;
 
 pub struct MarbleTexture {
     scale: f64,

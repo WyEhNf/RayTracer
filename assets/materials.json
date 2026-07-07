@@ -1,0 +1,506 @@
+{
+    "Dots Stroke": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "Material": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea1": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea10": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea11": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea12": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea13": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea14": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea15": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea16": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea17": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea18": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea19": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea2": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea20": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea21": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea22": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea23": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea24": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea25": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea26": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea27": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea28": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea29": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea3": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea30": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea31": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea32": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea33": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea34": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea35": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea36": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea37": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea38": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea39": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea4": {
+        "albedo": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": "",
+        "material_type": 0
+    },
+    "\u6750\u8cea40": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea5": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea6": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea7": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea8": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    },
+    "\u6750\u8cea9": {
+        "albedo": [
+            0.800000011920929,
+            0.800000011920929,
+            0.800000011920929,
+            1.0
+        ],
+        "fuzz_or_roughness": 0.5,
+        "ref_idx_or_ior": 1.5,
+        "texture_file": null,
+        "material_type": 0
+    }
+}

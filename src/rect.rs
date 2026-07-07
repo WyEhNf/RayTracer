@@ -4,7 +4,8 @@ use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::{Point3, Vec3};
+use crate::utils::random_range;
+use crate::vec3::{Point3, Vec3, dot};
 
 pub struct XyRect {
     x0: f64,
@@ -117,6 +118,33 @@ impl Hittable for XzRect {
             Point3::new(self.x0, self.k - 0.0001, self.z0),
             Point3::new(self.x1, self.k + 0.0001, self.z1),
         ))
+    }
+
+    fn pdf_value(&self, origin: &Point3, direction: &Vec3) -> f64 {
+        if let Some(rec) = self.hit(
+            &Ray::new(*origin, *direction),
+            0.001,
+            f64::INFINITY,
+        ) {
+            let area = (self.x1 - self.x0) * (self.z1 - self.z0);
+            let distance_squared = rec.t * rec.t * direction.length_squared();
+            let cosine = (dot(direction, &rec.normal) / direction.length()).abs();
+            if cosine < 1e-8 {
+                return 0.0;
+            }
+            distance_squared / (cosine * area)
+        } else {
+            0.0
+        }
+    }
+
+    fn random(&self, origin: &Point3) -> Vec3 {
+        let random_point = Point3::new(
+            random_range(self.x0, self.x1),
+            self.k,
+            random_range(self.z0, self.z1),
+        );
+        random_point - *origin
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::hittable::HitRecord;
-use crate::material::{Material, ScatterRecord};
+use crate::material::{Material, ScatterType};
 use crate::ray::Ray;
 use crate::utils::random_double;
 use crate::vec3::{Color, dot, reflect, refract, unit_vector};
@@ -21,7 +21,7 @@ fn reflectance(cosine: f64, ref_idx: f64) -> f64 {
 }
 
 impl Material for Dielectric {
-    fn scatter(&self, ray: &Ray, rec: &HitRecord) -> Option<ScatterRecord> {
+    fn scatter(&self, ray: &Ray, rec: &HitRecord) -> Option<ScatterType> {
         let refraction_ratio = if rec.front_face {
             1.0 / self.ref_idx
         } else {
@@ -40,7 +40,7 @@ impl Material for Dielectric {
                 refract(&unit_direction, &rec.normal, refraction_ratio)
             };
 
-        Some(ScatterRecord {
+        Some(ScatterType::Specular {
             attenuation: Color::new(1.0, 1.0, 1.0),
             scattered_ray: Ray::new_at_time(rec.p, direction, ray.time),
         })
