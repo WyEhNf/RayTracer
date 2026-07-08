@@ -1,11 +1,9 @@
-# Whitelist approach: ignore everything, then un-ignore allowed paths
+# Ignore everything by default
 *
 
-# Allowed paths
-!assets/
+# Whitelist: only allow these paths
 !doc/
 !src/
-!src-gpu/
 !LICENSE
 !Cargo.toml
 !hint.txt
