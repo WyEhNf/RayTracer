@@ -52,7 +52,6 @@ use crate::utils::random_double;
 
 fn ray_color(
     ray: &Ray,
-    background: &Color,
     world: &dyn Hittable,
     lights: Arc<dyn Hittable>,
     depth: u32,
@@ -73,7 +72,6 @@ fn ray_color(
                     + attenuation
                         * ray_color(
                             &scattered_ray,
-                            background,
                             world,
                             Arc::clone(&lights),
                             depth - 1,
@@ -231,7 +229,7 @@ fn main() {
     let aspect_ratio = 1.0;
     let image_width: u32 = 1200;
     let image_height: u32 = (image_width as f64 / aspect_ratio) as u32;
-    let image_height = if image_height < 1 { 1 } else { image_height };
+    let image_height = image_height.max(1);
 
     let samples_per_pixel: u32 = 2000;
     let max_depth: u32 = 40;
@@ -286,7 +284,7 @@ fn main() {
                 let v = ((image_height - 1 - j) as f64 + random_double())
                     / (image_height - 1) as f64;
                 let ray = camera.get_ray(u, v);
-                pixel_color += ray_color(&ray, &Color::new(0.0, 0.0, 0.0), &*world, Arc::clone(&lights), max_depth);
+                pixel_color += ray_color(&ray, &*world, Arc::clone(&lights), max_depth);
             }
             let pixel = img.get_pixel_mut(i, j);
             write_color(pixel, &pixel_color, samples_per_pixel);

@@ -20,10 +20,6 @@ impl HittableList {
     pub fn add(&mut self, object: Arc<dyn Hittable>) {
         self.objects.push(object);
     }
-
-    pub fn clear(&mut self) {
-        self.objects.clear();
-    }
 }
 
 impl Hittable for HittableList {

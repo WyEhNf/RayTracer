@@ -4,7 +4,7 @@ use crate::hittable::HitRecord;
 use crate::material::{Material, ScatterType};
 use crate::ray::Ray;
 use crate::texture::Texture;
-use crate::vec3::Color;
+use crate::vec3::Point3;
 
 pub struct DiffuseLight {
     emit: Arc<dyn Texture>,
@@ -21,7 +21,7 @@ impl Material for DiffuseLight {
         None
     }
 
-    fn emitted(&self, u: f64, v: f64, p: &crate::vec3::Point3) -> Color {
+    fn emitted(&self, u: f64, v: f64, p: &Point3) -> crate::vec3::Color {
         self.emit.value(u, v, p)
     }
 }

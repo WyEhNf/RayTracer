@@ -1,5 +1,4 @@
-use crate::texture::Texture;
-use crate::vec3::{Color, Point3, Vec3, dot, unit_vector};
+use crate::vec3::{Vec3, dot, unit_vector};
 
 pub struct Perlin {
     ranvec: [Vec3; 256],
@@ -85,50 +84,5 @@ impl Perlin {
             temp_p = temp_p * 2.0;
         }
         accum.abs()
-    }
-}
-
-pub struct MarbleTexture {
-    scale: f64,
-    noise: Perlin,
-}
-
-impl MarbleTexture {
-    pub fn new(scale: f64) -> Self {
-        Self {
-            scale,
-            noise: Perlin::new(),
-        }
-    }
-}
-
-impl Texture for MarbleTexture {
-    fn value(&self, _u: f64, _v: f64, p: &Point3) -> Color {
-        let s =
-            0.5 * (1.0 + (self.scale * p.z + 10.0 * self.noise.turb(p, 7)).sin());
-        (1.0 - s) * Color::new(1.0, 1.0, 1.0)
-            + s * Color::new(0.5, 0.6, 0.7)
-    }
-}
-
-pub struct NoiseTexture {
-    scale: f64,
-    noise: Perlin,
-}
-
-impl NoiseTexture {
-    pub fn new(scale: f64) -> Self {
-        Self {
-            scale,
-            noise: Perlin::new(),
-        }
-    }
-}
-
-impl Texture for NoiseTexture {
-    fn value(&self, _u: f64, _v: f64, p: &Point3) -> Color {
-        Color::new(1.0, 1.0, 1.0)
-            * 0.5
-            * (1.0 + (self.scale * p.z + 10.0 * self.noise.turb(p, 7)).sin())
     }
 }

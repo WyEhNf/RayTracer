@@ -24,24 +24,24 @@ impl Metal {
 impl Material for Metal {
     fn scatter(&self, ray: &Ray, rec: &HitRecord) -> Option<ScatterType> {
         let reflected = reflect(&unit_vector(&ray.direction), &rec.normal);
-        let scattered_dir = reflected + self.fuzz * random_in_unit_sphere();
 
+        if self.fuzz < 0.001 {
+            return Some(ScatterType::Specular {
+                attenuation: self.albedo,
+                scattered_ray: Ray::new_at_time(rec.p, reflected, ray.time),
+            });
+        }
+
+        let scattered_dir = reflected + self.fuzz * random_in_unit_sphere();
         if dot(&scattered_dir, &rec.normal) <= 0.0 {
             return None;
         }
 
-        if self.fuzz < 0.001 {
-            Some(ScatterType::Specular {
-                attenuation: self.albedo,
-                scattered_ray: Ray::new_at_time(rec.p, reflected, ray.time),
-            })
-        } else {
-            let pdf = Arc::new(CosinePdf::new(&rec.normal));
-            Some(ScatterType::Diffuse {
-                attenuation: self.albedo,
-                pdf,
-            })
-        }
+        let pdf = Arc::new(CosinePdf::new(&rec.normal));
+        Some(ScatterType::Diffuse {
+            attenuation: self.albedo,
+            pdf,
+        })
     }
 
     fn scattering_pdf(&self, _ray: &Ray, rec: &HitRecord, scattered: &Vec3) -> f64 {

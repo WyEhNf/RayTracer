@@ -21,7 +21,7 @@ impl Hittable for Translate {
         let moved_ray = Ray::new_at_time(ray.origin - self.offset, ray.direction, ray.time);
         self.ptr.hit(&moved_ray, t_min, t_max).map(|mut rec| {
             rec.p += self.offset;
-            rec.set_face_normal(&moved_ray, &rec.normal.clone());
+            rec.set_face_normal(&moved_ray, &rec.normal);
             rec
         })
     }

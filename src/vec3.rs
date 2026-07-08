@@ -25,10 +25,6 @@ impl Vec3 {
         self.x * self.x + self.y * self.y + self.z * self.z
     }
 
-    pub fn near_zero(&self) -> bool {
-        let s = 1e-8;
-        self.x.abs() < s && self.y.abs() < s && self.z.abs() < s
-    }
 }
 
 impl Index<usize> for Vec3 {
@@ -135,10 +131,6 @@ pub fn refract(uv: &Vec3, n: &Vec3, etai_over_etat: f64) -> Vec3 {
     r_out_perp + r_out_parallel
 }
 
-pub fn random() -> Vec3 {
-    Vec3::new(random_double(), random_double(), random_double())
-}
-
 pub fn random_range_vec(min: f64, max: f64) -> Vec3 {
     Vec3::new(
         random_range(min, max),
@@ -153,19 +145,6 @@ pub fn random_in_unit_sphere() -> Vec3 {
         if p.length_squared() < 1.0 {
             return p;
         }
-    }
-}
-
-pub fn random_unit_vector() -> Vec3 {
-    unit_vector(&random_in_unit_sphere())
-}
-
-pub fn random_in_hemisphere(normal: &Vec3) -> Vec3 {
-    let in_unit_sphere = random_in_unit_sphere();
-    if dot(&in_unit_sphere, normal) > 0.0 {
-        in_unit_sphere
-    } else {
-        -in_unit_sphere
     }
 }
 
