@@ -21,6 +21,9 @@ struct GpuUniforms {
     triangle_count: u32,
     bvh_node_count: u32,
     light_count: u32,
+    particle_count: u32,
+    particle_offset: u32,
+    _pad_particle: [u32; 2], // WGSL vec4 alignment
     background: [f32; 4],
     tex_count: u32,
     batch_offset: u32,
@@ -29,7 +32,8 @@ struct GpuUniforms {
     tile_start_y: u32,
     tile_end_x: u32,
     tile_end_y: u32,
-    _pad: u32,
+    _pad1: u32,          // WGSL vec4 16-byte alignment
+    sun_dir: [f32; 4],   // xyz = sun direction (dusk), w = unused
 }
 
 #[repr(C)]
@@ -38,7 +42,7 @@ struct GpuTexture {
     data_offset: u32,
     width: u32,
     height: u32,
-    _pad: u32,
+    channels: u32,  // 3=RGB, 4=RGBA
 }
 
 #[repr(C)]
@@ -74,6 +78,16 @@ struct GpuMaterial {
     ref_idx: f32,
     material_type: u32,
     tex_id: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct GpuParticle {
+    pos_t0: [f32; 4],  // position at shutter open
+    pos_t1: [f32; 4],  // position at shutter close (t0 + fall + wind)
+    radius: f32,
+    material_id: u32,
+    _pad: [u32; 2],
 }
 
 #[repr(C)]
@@ -483,7 +497,7 @@ fn load_textures(
             if alt.exists() { alt } else { continue; }
         };
         let mut img = match image::open(&final_path) {
-            Ok(i) => i.to_rgb8(),
+            Ok(i) => i.to_rgba8(),
             Err(_) => continue,
         };
         // Downscale if too large
@@ -504,9 +518,10 @@ fn load_textures(
                 tex_data.push(p[0] as f32 / 255.0);
                 tex_data.push(p[1] as f32 / 255.0);
                 tex_data.push(p[2] as f32 / 255.0);
+                tex_data.push(p[3] as f32 / 255.0);
             }
         }
-        textures.push(GpuTexture { data_offset: offset, width: w, height: h, _pad: 0 });
+        textures.push(GpuTexture { data_offset: offset, width: w, height: h, channels: 4 });
     }
 
     println!("Loaded {} textures ({} floats)", textures.len(), tex_data.len());
@@ -543,50 +558,51 @@ fn load_scene_textures(obj_dir: &Path) -> (Vec<GpuTexture>, Vec<f32>) {
 
     let max_tex_size: u32 = 1024;
 
-    // Material NAME number → texture file mapping (user-provided)
-    // tex_map[N] = texture for 材質N
+    // Material NAME number → texture file mapping
+    // Verified against Ray渲染材质包/*.fx NORMAL_MAP_FILE references
+    // tex_map[N] = base color texture for 材質N
     let tex_map: [Option<&str>; 41] = [
         None,                          // 0 unused
-        Some("Tex_0002.png"),          // 材質1 → 002
-        Some("Tex_0003.png"),          // 材質2 → 003
-        Some("Tex_0004.png"),          // 材質3 → 0004
-        Some("Tex_0005.png"),          // 材質4 → 0005
-        Some("Tex_0007.png"),          // 材質5 → 0007
-        Some("Tex_0008.png"),          // 材質6 → 0008
-        Some("Tex_0009.png"),          // 材質7 → 0009
-        Some("Tex_0010.png"),          // 材質8 → 0010
-        Some("Tex_0011.png"),          // 材質9 → 0011
-        Some("Tex_0012.png"),          // 材質10 → 0012
-        Some("Tex_0013.png"),          // 材質11 → 0013
-        Some("Tex_0014.png"),          // 材質12 → 0014
-        Some("Tex_0015.png"),          // 材質13 → 0015
-        Some("Tex_0006_3.tga"),        // 材質14 → 006_3.tga
-        Some("Tex_0018.png"),          // 材質15 → 0018
-        Some("Tex_0019.png"),          // 材質16 → 0019
-        Some("Tex_0020.png"),          // 材質17 → 0020
-        Some("Tex_0021.png"),          // 材質18 → 0021
-        Some("Tex_0025.png"),          // 材質19 → 0025
+        Some("Tex_0002.png"),          // 材質1  — fx:N=Tex_0002_N
+        Some("Tex_0003.png"),          // 材質2  — fx:N=Tex_0003_N
+        Some("Tex_0004.png"),          // 材質3  — fx:N=Tex_0004_N
+        Some("Tex_0005.png"),          // 材質4  — fx:N=Tex_0005_N
+        Some("Tex_0007.png"),          // 材質5  — fx:N=Tex_0007_N
+        Some("Tex_0008.png"),          // 材質6  — fx:N=Tex_0008_N
+        Some("Tex_0009.png"),          // 材質7  — fx:N=Tex_0009_N
+        Some("Tex_0010.png"),          // 材質8  — fx:N=Tex_0010_N
+        Some("Tex_0011.png"),          // 材質9  — fx:N=Tex_0011_N
+        Some("Tex_0012.png"),          // 材質10 — fx:N=Tex_0012_N
+        Some("Tex_0013.png"),          // 材質11 — fx:N=Tex_0013_N
+        Some("Tex_0014.png"),          // 材質12 — fx:N=Tex_0014_N
+        Some("Tex_0015.png"),          // 材質13 — fx:N=Tex_0015_N
+        Some("Tex_0006_3.tga"),        // 材質14 — petal (α=Tex_0006_A)
+        Some("Tex_0018.png"),          // 材質15 — fx:N=Tex_0018_N
+        Some("Tex_0019.png"),          // 材質16 — fx:N=Tex_0019_N  (was incorrectly skipped as normal map)
+        Some("Tex_0020.png"),          // 材質17 — smooth=1.0 specular material
+        Some("Tex_0021.png"),          // 材質18 — fx:N=Tex_0021_N
+        Some("Tex_0025.png"),          // 材質19 — fx:N=Tex_0025_N
         Some("Tex_0024.png"),          // 材質20 → 0024
-        Some("Tex_0026.png"),          // 材質21 → 0026
-        Some("Tex_0027.png"),          // 材質22 → 0027
-        Some("Tex_0028.png"),          // 材質23 → 0028
-        Some("Tex_0029.png"),          // 材質24 → 0029
-        Some("Tex_0030.png"),          // 材質25 → 0030
-        Some("Tex_0031.png"),          // 材質26 → 0031
-        Some("Tex_0032.png"),          // 材質27 → 0032
-        Some("Tex_0033.png"),          // 材質28 → 0033
-        Some("Tex_0034.png"),          // 材質29 → 0034
-        Some("Tex_0035.png"),          // 材質30 → 0035
-        Some("Tex_0038_3.tga"),        // 材質31 → 0038_3.tga
-        Some("Tex_0040.png"),          // 材質32 → 0040
-        None,                          // 材質33 — missing
-        Some("Tex_0017.png"),          // 材質34 → 0017
-        Some("Tex_0001.png"),          // 材質35 → 0001
-        Some("Tex_0016.png"),          // 材質36 → 0016
-        Some("Tex_0023.png"),          // 材質37 → 0023
-        Some("Tex_0022.png"),          // 材質38 → 0022
-        Some("Tex_0037_3.tga"),        // 材質39 → 0037_3.tga
-        Some("Tex_0039.png"),          // 材質40 → 0039
+        Some("Tex_0026.png"),          // 材質21 — fx:N=Tex_0026_N
+        Some("Tex_0027.png"),          // 材質22 — fx:N=Tex_0027_N
+        Some("Tex_0028.png"),          // 材質23 — fx:N=Tex_0028_N
+        Some("Tex_0029.png"),          // 材質24 — fx:N=Tex_0029_N
+        Some("Tex_0030.png"),          // 材質25 — fx:N=Tex_0030_N
+        Some("Tex_0031.png"),          // 材質26 — fx:N=Tex_0031_N
+        Some("Tex_0032.png"),          // 材質27 — fx:N=Tex_0032_N
+        Some("Tex_0033.png"),          // 材質28 — fx:N=Tex_0033_N
+        Some("Tex_0034.png"),          // 材質29 — fx:N=Tex_0034_N
+        Some("Tex_0035.png"),          // 材質30 — fx:N=Tex_0035_N
+        Some("Tex_0038_3.tga"),        // 材質31 — petal (α=Tex_0006_A)
+        Some("Tex_0040.png"),          // 材質32 — fx:N=Tex_0040_N
+        Some("Tex_0015.png"),          // 材質33 — fx: smooth=1.0, FIXED: use 0015
+        Some("Tex_0017.png"),          // 材質34 — fx:N=Tex_0017_N
+        Some("Tex_0015.png"),          // 材質35 — fx:N=Tex_0015_N  (FIXED: was Tex_0001)
+        Some("Tex_0016.png"),          // 材質36 — fx:N=Tex_0016_N
+        Some("Tex_0023.png"),          // 材質37 — fx:N=Tex_0023_N
+        Some("Tex_0022.png"),          // 材質38 — fx:N=Tex_0022_N
+        Some("Tex_0015.png"),          // 材質39 — fx:N=Tex_0015_N  (FIXED: was Tex_0037_3.tga)
+        Some("Tex_0015.png"),          // 材質40 — fx:N=Tex_0015_N  (FIXED: was Tex_0039)
     ];
 
     for mtl_idx in 1u32..=40 {
@@ -595,8 +611,8 @@ fn load_scene_textures(obj_dir: &Path) -> (Vec<GpuTexture>, Vec<f32>) {
             None => {
                 eprintln!("  MTL idx {} — missing, using white", mtl_idx);
                 let offset = tex_data.len() as u32;
-                tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0);
-                textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, _pad: 0 });
+                tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0);
+                textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, channels: 4 });
                 continue;
             }
         };
@@ -604,17 +620,17 @@ fn load_scene_textures(obj_dir: &Path) -> (Vec<GpuTexture>, Vec<f32>) {
         if !tex_path.exists() {
             eprintln!("  {} missing, using white", filename);
             let offset = tex_data.len() as u32;
-            tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0);
-            textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, _pad: 0 });
+            tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0);
+            textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, channels: 4 });
             continue;
         }
         let mut img = match image::open(&tex_path) {
-            Ok(i) => i.to_rgb8(),
+            Ok(i) => i.to_rgba8(),
             Err(e) => {
                 eprintln!("  Cannot open {}: {}", filename, e);
                 let offset = tex_data.len() as u32;
-                tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0);
-                textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, _pad: 0 });
+                tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0);
+                textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, channels: 4 });
                 continue;
             }
         };
@@ -635,6 +651,7 @@ fn load_scene_textures(obj_dir: &Path) -> (Vec<GpuTexture>, Vec<f32>) {
                 tex_data.push(p[0] as f32 / 255.0);
                 tex_data.push(p[1] as f32 / 255.0);
                 tex_data.push(p[2] as f32 / 255.0);
+                tex_data.push(p[3] as f32 / 255.0);
             }
         }
         // Debug: sample average pixel colour
@@ -649,18 +666,18 @@ fn load_scene_textures(obj_dir: &Path) -> (Vec<GpuTexture>, Vec<f32>) {
         let avg_r = sr as f64 / n as f64;
         let avg_g = sg as f64 / n as f64;
         let avg_b = sb as f64 / n as f64;
-        // Detect non-base-colour textures
-        let is_normal_map = avg_b > 150.0 && avg_b > avg_r * 1.5 && avg_b > avg_g * 1.3;
-        let is_utility_map = (avg_r + avg_g + avg_b) / 3.0 < 30.0 || (avg_r + avg_g + avg_b) / 3.0 > 250.0;
-        if is_normal_map || is_utility_map {
-            println!("  {} avg RGB=({:.0},{:.0},{:.0}) — SKIPPED (non-colour map), using white", filename, avg_r, avg_g, avg_b);
-            // Replace with white (backtrack the data we just pushed)
+        // Detect non-base-colour textures (conservative, only extreme cases)
+        let avg_lum = (avg_r + avg_g + avg_b) / 3.0;
+        let is_blank = avg_lum > 252.0;       // pure-white blank/mask
+        let is_ao = avg_lum < 12.0;            // near-black AO/utility
+        if is_blank || is_ao {
+            println!("  {} avg RGB=({:.0},{:.0},{:.0}) — non-colour, using mid-grey", filename, avg_r, avg_g, avg_b);
             tex_data.truncate(offset as usize);
-            tex_data.push(1.0); tex_data.push(1.0); tex_data.push(1.0);
-            textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, _pad: 0 });
+            tex_data.push(0.5); tex_data.push(0.5); tex_data.push(0.5); tex_data.push(1.0);
+            textures.push(GpuTexture { data_offset: offset, width: 1, height: 1, channels: 4 });
         } else {
             println!("  {} avg RGB=({:.0},{:.0},{:.0})", filename, avg_r, avg_g, avg_b);
-            textures.push(GpuTexture { data_offset: offset, width: w, height: h, _pad: 0 });
+            textures.push(GpuTexture { data_offset: offset, width: w, height: h, channels: 4 });
         }
     }
 
@@ -866,6 +883,106 @@ fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Ve
 
 // ─── Scene (鳴神大社) creation ────────────────────────────────────────────
 
+fn generate_petal_particles(
+    _tris: &[GpuTriangle],
+    material_id: u32,
+) -> (Vec<GpuParticle>, Vec<GpuSphere>) {
+    use vec3::random_double;
+    let mut particles: Vec<GpuParticle> = Vec::new();
+    let mut spheres: Vec<GpuSphere> = Vec::new();
+
+    let count = 6000u32;
+    let shutter = 0.08f32; // seconds of motion blur
+
+    // Spawn volumes: (cx, cy, cz, rx, rz)
+    let zones: [(f32, f32, f32, f32, f32); 4] = [
+        (8.0, 18.0, 12.0, 14.0, 8.0),    // right tree cluster
+        (-12.0, 16.0, 5.0, 16.0, 10.0),  // left tree cluster
+        (0.0, 22.0, -8.0, 20.0, 12.0),   // rear high trees
+        (5.0, 8.0, 25.0, 12.0, 7.0),     // front approach
+    ];
+
+    for _i in 0..count {
+        // Pick a random zone
+        let zi = (random_double() * zones.len() as f32) as usize % zones.len();
+        let (cx, cy, cz, rx, rz) = zones[zi];
+
+        // Random position in ellipsoid
+        let angle = random_double() * 6.28318530718;
+        let r = random_double().sqrt();
+        let h = (random_double() * 2.0 - 1.0) * 0.7;
+        let px = cx + r * angle.cos() * rx;
+        let py = cy + h * 15.0;
+        let pz = cz + r * angle.sin() * rz;
+
+        // Sway + wind drift
+        let wind_x = (random_double() - 0.5) * 3.0;
+        let wind_z = (random_double() - 0.5) * 3.0;
+        let fall_speed = 18.0 + random_double() * 22.0;
+        let fall_dist = fall_speed * shutter;
+
+        let p0x = px;
+        let p0y = py + random_double() * 5.0;
+        let p0z = pz;
+        let p1x = px + wind_x;
+        let p1y = py - fall_dist;
+        let p1z = pz + wind_z;
+
+        let radius = 0.25 + random_double() * 0.45;
+
+        // BVH sphere: center = midpoint, radius covers full sweep
+        let mid_x = (p0x + p1x) * 0.5;
+        let mid_y = (p0y + p1y) * 0.5;
+        let mid_z = (p0z + p1z) * 0.5;
+        let sweep = ((p1x-p0x).powi(2) + (p1y-p0y).powi(2) + (p1z-p0z).powi(2)).sqrt();
+        let bvh_radius = radius + sweep * 0.5;
+
+        particles.push(GpuParticle {
+            pos_t0: [p0x, p0y, p0z, 0.0],
+            pos_t1: [p1x, p1y, p1z, 0.0],
+            radius,
+            material_id,
+            _pad: [0; 2],
+        });
+        spheres.push(GpuSphere {
+            center: [mid_x, mid_y, mid_z, 0.0],
+            radius: bvh_radius,
+            material_id,
+            _pad: [0; 2],
+        });
+    }
+
+    // Near-camera bokeh particles (large, close)
+    let bokeh_count = 80u32;
+    for _i in 0..bokeh_count {
+        let px = (random_double() - 0.5) * 50.0;
+        let py = 5.0 + random_double() * 20.0;
+        let pz = 40.0 + random_double() * 25.0;
+
+        let fall_dist = (12.0 + random_double() * 15.0) * shutter;
+        let wind_x = (random_double() - 0.5) * 2.0;
+        let wind_z = (random_double() - 0.5) * 2.0;
+
+        let radius = 1.2 + random_double() * 2.5;
+        let p0x = px; let p0y = py; let p0z = pz;
+        let p1x = px + wind_x; let p1y = py - fall_dist; let p1z = pz + wind_z;
+
+        let mid = [(p0x+p1x)*0.5, (p0y+p1y)*0.5, (p0z+p1z)*0.5, 0.0];
+        let sweep = ((p1x-p0x).powi(2) + (p1y-p0y).powi(2) + (p1z-p0z).powi(2)).sqrt();
+
+        particles.push(GpuParticle {
+            pos_t0: [p0x, p0y, p0z, 0.0], pos_t1: [p1x, p1y, p1z, 0.0],
+            radius, material_id, _pad: [0; 2],
+        });
+        spheres.push(GpuSphere {
+            center: mid, radius: radius + sweep * 0.5, material_id, _pad: [0; 2],
+        });
+    }
+
+    println!("Generated {} petal particles ({} bokeh)", count + bokeh_count, bokeh_count);
+    (particles, spheres)
+}
+
 fn create_scene_environment(
     obj_path: &str,
 ) -> (
@@ -899,6 +1016,7 @@ fn create_scene_environment(
     let (tex_info, tex_data_vec) = load_scene_textures(obj_dir);
 
     // Assign tex_id by material NAME number (材質N → N, uses tex_map)
+    // Material properties verified against Ray渲染材质包/*.fx
     for (i, name) in obj_mat_names.iter().enumerate() {
         let mat_idx = default_mat_count as usize + i;
         let m = &mut materials[mat_idx];
@@ -909,8 +1027,44 @@ fn create_scene_environment(
             0
         };
         m.tex_id = tid;
-        m.material_type = 0;
-        println!("  {} → tex_id {}", name, tid);
+        m.material_type = 0; // default: diffuse
+        m.fuzz = 0.0;
+        m.ref_idx = 1.0;
+
+        match tid {
+            // ── Clear Coat (type 4): lacquered wood — sharp Fresnel coat + diffuse base ──
+            1 | 3 | 7 | 8 | 11 | 34 => { m.material_type = 4; m.ref_idx = 1.5; m.fuzz = 0.25; m.albedo = [0.55, 0.55, 0.55, 0.0]; } // silk-matte lacquer
+
+            // ── Metal/Glossy (type 1) ──
+            16 => { m.material_type = 1; m.fuzz = 0.2; }   // fx: smoothness=0.8
+            35 => { m.material_type = 1; m.fuzz = 0.3; }   // fx: smoothness=0.7 + α=Tex_0006_A
+
+            // ── Dielectric/Glass (type 2) ──
+            17 => { m.material_type = 2; m.ref_idx = 1.45; m.fuzz = 0.0; }  // fx: smooth=1.0, baseSpec=0.02
+            33 => { m.material_type = 2; m.ref_idx = 1.333; m.fuzz = 0.15; m.albedo = [0.1, 0.25, 0.4, 0.0]; }  // Water: IOR=1.333 + wave + Beer
+
+            // ── SSS Petal (type 7): Random Walk subsurface scattering ──
+            14 | 31 | 39 | 40 => { m.material_type = 7; m.fuzz = 0.5; m.albedo = [1.0, 0.75, 0.7, 0.0]; }
+
+            // ── Procedural Stone (type 5): bump-mapped rock surface ──
+            5 | 10 | 21..=30 | 38 => { m.material_type = 5; m.fuzz = 0.6; }
+
+            // ── Procedural Wood (type 6): anisotropic grain + bump ──
+            19 | 20 | 32 => { m.material_type = 6; m.fuzz = 0.5; }
+
+            _ => {} // all others: diffuse (type 0), smoothness=0.0
+        }
+
+            let type_name = match m.material_type {
+                1 => "METAL",
+                2 => "GLASS",
+                4 => "CLEARCOAT",
+                5 => "STONE",
+                6 => "WOOD",
+                7 => "SSS",
+                _ => if m.fuzz > 0.0 { "TRANSLUCENT" } else { "DIFFUSE" },
+            };
+        println!("  {} → tex_id {} ({})", name, tid, type_name);
     }
 
     // Offset triangle material IDs past the default materials
@@ -962,26 +1116,16 @@ fn create_scene_environment(
 
     let s = model_size;
 
-    // 1. Main key — behind camera, warm sun
-    add_light([cx + s * 0.3, bmax[1] + s * 0.5, cz + s * 2.0], s * 0.35, [80.0, 72.0, 55.0]);
-
-    // 2. Top dome — directly above, cool sky
-    add_light([cx, bmax[1] + s * 0.7, cz], s * 0.45, [35.0, 42.0, 60.0]);
-
-    // 3. Fill left — far left
-    add_light([cx - s * 1.8, bmax[1] + s * 0.2, cz + s * 0.6], s * 0.35, [25.0, 30.0, 45.0]);
-
-    // 4. Fill right — far right
-    add_light([cx + s * 1.8, bmax[1] + s * 0.2, cz + s * 0.6], s * 0.35, [45.0, 38.0, 25.0]);
-
-    // 5. Back light — behind scene
-    add_light([cx, bmax[1] + s * 0.4, cz - s * 1.2], s * 0.35, [30.0, 35.0, 50.0]);
-
-    // 6. Ground bounce — below scene
-    add_light([cx, bmin[1] - s * 0.3, cz + s * 0.5], s * 0.5, [15.0, 12.0, 8.0]);
-
-    // 7. Interior ambient — scene center
-    add_light([cx, bmin[1] + s * 0.3, cz], s * 0.35, [25.0, 28.0, 35.0]);
+    // Single sun light — placed far in the dusk sun direction
+    // Sun dir: ~(0.5, 0.15, -0.7) — low western sky at dusk
+    let sun_dir = [0.5_f32, 0.15, -0.5]; // original angle, Z raised
+    let sun_len = (sun_dir[0]*sun_dir[0] + sun_dir[1]*sun_dir[1] + sun_dir[2]*sun_dir[2]).sqrt();
+    let sun_dx = sun_dir[0] / sun_len;
+    let sun_dy = sun_dir[1] / sun_len;
+    let sun_dz = sun_dir[2] / sun_len;
+    let sun_dist = s * 10.0;
+    add_light([cx + sun_dx * sun_dist, bmax[1] + sun_dy * sun_dist + s * 0.5, cz + sun_dz * sun_dist],
+              s * 3.0, [22.0, 13.0, 3.5]);  // golden sunset sun
 
     println!(
         "Scene: {} spheres, {} triangles, {} materials, {} lights",
@@ -1052,7 +1196,7 @@ async fn run() {
         .request_device(
             &wgpu::DeviceDescriptor {
                 required_limits: wgpu::Limits {
-                    max_storage_buffers_per_shader_stage: 10,
+                    max_storage_buffers_per_shader_stage: 12,
                     max_buffer_size: 1073741824,
                     max_storage_buffer_binding_size: 1073741824,
                     ..Default::default()
@@ -1080,13 +1224,13 @@ async fn run() {
 
     // Scene-mode: smaller output for faster iteration
     if render_scene {
-        image_width = 6400;
-        image_height = 6400;
-        samples_per_pixel = 200;
+        image_width = 8192;
+        image_height = 8192;
+        samples_per_pixel = 256;
         max_depth = 50;
     }
 
-    let (mut spheres, triangles, materials, lights, tex_info, tex_data_vec) = if render_scene {
+    let (mut spheres, triangles, mut materials, lights, tex_info, tex_data_vec) = if render_scene {
         let scene_path = if Path::new("../assets/Scene.obj").exists() {
             "../assets/Scene.obj"
         } else if Path::new("assets/Scene.obj").exists() {
@@ -1143,7 +1287,7 @@ async fn run() {
             // dist so that model_size occupies 90% of the vertical frame
             cam_vfov = 40.0;
             let half_h = (cam_vfov / 2.0).to_radians().tan();
-            let desired_visible = model_size / 0.90; // model fills 90%
+            let desired_visible = model_size / 1.08; // model overfills the frame
             let dist = (desired_visible / 2.0) / half_h;
             // Elevated 25° front view
             let angle = 25.0_f32.to_radians();
@@ -1187,6 +1331,15 @@ async fn run() {
         return;
     }
 
+    // ── Generate petal particles (DISABLED) ──
+    let particle_count: u32 = 0;
+    let particle_offset: u32 = spheres.len() as u32;
+    let particle_vec: Vec<GpuParticle> = Vec::new();
+    // let petal_mat_id = materials.len() as u32;
+    // materials.push(GpuMaterial { ... });
+    // let (particle_vec, particle_spheres) = generate_petal_particles(&use_triangles, petal_mat_id);
+    // spheres.extend(particle_spheres);
+
     let mut final_spheres = spheres.clone();
     let mut final_tris = use_triangles.clone();
     let final_bvh = build_all_bvh_reordered(&mut final_spheres, &mut final_tris);
@@ -1201,6 +1354,9 @@ async fn run() {
         triangle_count: final_tris.len() as u32,
         bvh_node_count: final_bvh.len() as u32,
         light_count: lights.len() as u32,
+        particle_count,
+        particle_offset,
+        _pad_particle: [0; 2],
         background: bg,
         tex_count: tex_info.len() as u32,
         batch_offset: 0,
@@ -1209,7 +1365,8 @@ async fn run() {
         tile_start_y: 0,
         tile_end_x: 0,
         tile_end_y: 0,
-        _pad: 0,
+        _pad1: 0,
+        sun_dir: [0.692, 0.207, -0.692, 0.0], // original azimuth, Z raised
     };
 
     println!(
@@ -1294,7 +1451,7 @@ async fn run() {
 
     // Texture metadata buffer
     let tex_slice: &[GpuTexture] = if tex_info.is_empty() {
-        &[GpuTexture { data_offset: 0, width: 0, height: 0, _pad: 0 }]
+        &[GpuTexture { data_offset: 0, width: 0, height: 0, channels: 3 }]
     } else {
         &tex_info
     };
@@ -1308,6 +1465,17 @@ async fn run() {
     let tex_data_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Texture Data Buffer"),
         contents: bytemuck::cast_slice(tex_data_slice),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    // Particle buffer (dummy if disabled)
+    let dummy_particle = GpuParticle {
+        pos_t0: [0.0; 4], pos_t1: [0.0; 4], radius: 0.0, material_id: 0, _pad: [0; 2],
+    };
+    let particle_slice: &[GpuParticle] = if particle_vec.is_empty() { std::slice::from_ref(&dummy_particle) } else { &particle_vec };
+    let particle_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Particle Buffer"),
+        contents: bytemuck::cast_slice(particle_slice),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
@@ -1414,6 +1582,16 @@ async fn run() {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -1461,6 +1639,10 @@ async fn run() {
                 binding: 9,
                 resource: tex_data_buf.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: particle_buf.as_entire_binding(),
+            },
         ],
     });
 
@@ -1480,8 +1662,8 @@ async fn run() {
 
     // Tile-based batch rendering: split image into tiles, split samples into batches.
     // Each dispatch = one tile × one sample batch, keeping per-dispatch work low.
-    let tile_size: u32 = 512;
-    let samples_per_batch: u32 = 8;
+    let tile_size: u32 = 256;
+    let samples_per_batch: u32 = 8;  // 256²×8 = 524K rays/dispatch, safe for TDR
     let num_batches = (samples_per_pixel + samples_per_batch - 1) / samples_per_batch;
 
     let mut total_dispatches: u32 = 0;
@@ -1571,7 +1753,7 @@ async fn run() {
     drop(data);
     staging_buffer.unmap();
 
-    let path = "output/gpu/image.png";
+    let path = if render_scene { "output/gpu/image.png" } else { "output/gpu/image2.png" };
     std::fs::create_dir_all("output/gpu").ok();
     img.save(path).expect("Cannot save image");
     println!("Output: {}", path);
