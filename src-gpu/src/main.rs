@@ -23,8 +23,7 @@ struct GpuUniforms {
     light_count: u32,
     particle_count: u32,
     particle_offset: u32,
-    falling_petal_count: u32,
-    _pad_u: u32,              // WGSL vec4 alignment
+    _pad_particle: [u32; 2],  // WGSL vec4 alignment
     background: [f32; 4],
     tex_count: u32,
     batch_offset: u32,
@@ -69,16 +68,6 @@ struct GpuTriangle {
     uv2: [f32; 2],
     material_id: u32,
     _pad: u32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct GpuPetalTri {
-    v0: [f32; 4], n0: [f32; 4],
-    v1: [f32; 4], n1: [f32; 4],
-    v2: [f32; 4], n2: [f32; 4],
-    uv0: [f32; 2], uv1: [f32; 2], uv2: [f32; 2],
-    material_id: u32, _pad: u32,
 }
 
 #[repr(C)]
@@ -1049,49 +1038,6 @@ fn generate_petal_particles(
     (particles, spheres)
 }
 
-fn build_falling_petals(emitters: &[[f32;3]; 3], petal_count: u32, time: f32, mat_id: u32) -> Vec<GpuPetalTri> {
-    use vec3::random_double;
-    let mut tris = Vec::new();
-    let size = 0.25;
-    let local_v = [[-size,0.0,-size], [size,0.0,-size], [0.0,0.0,size]];
-    let uv = [[0.0,0.0], [1.0,0.0], [0.5,1.0]];
-    let normal: [f32;4] = [0.0,1.0,0.0,0.0];
-
-    for i in 0..petal_count {
-        let ei = (random_double() * emitters.len() as f32) as usize % emitters.len();
-        let emit = emitters[ei];
-        let age = random_double() * 8.0; // 0-8 seconds old
-        let wind_x = 0.5 + (time*0.5 + age).sin() * 0.3;
-        let wind_z = 0.2 + (time*0.3 + age).cos() * 0.2;
-        let fall_speed = 1.5 + random_double() * 2.0;
-        let swing = (time*4.0 + age*7.0).sin() * 0.4;
-
-        let px = emit[0] + (random_double()-0.5)*2.0 + wind_x*age + (time*3.0+age).cos()*0.5*age;
-        let py = emit[1] - fall_speed*age;
-        let pz = emit[2] + (random_double()-0.5)*2.0 + wind_z*age + swing*age;
-        if py < 0.5 { continue; }
-
-        let rot_y = age*1.7 + (time*2.0).sin()*0.6;
-        let rot_x = (time*5.0 + age*11.0).cos()*0.8;
-        let cos_y = rot_y.cos(); let sin_y = rot_y.sin();
-        let cos_x = rot_x.cos(); let sin_x = rot_x.sin();
-
-        let transform = |v: [f32;3]| -> [f32;4] {
-            let y1 = v[1]*cos_x - v[2]*sin_x;
-            let z1 = v[1]*sin_x + v[2]*cos_x;
-            let x2 = v[0]*cos_y + z1*sin_y;
-            let z2 = -v[0]*sin_y + z1*cos_y;
-            [x2+px, y1+py, z2+pz, 1.0]
-        };
-        tris.push(GpuPetalTri {
-            v0: transform(local_v[0]), n0: normal, v1: transform(local_v[1]), n1: normal,
-            v2: transform(local_v[2]), n2: normal, uv0: uv[0], uv1: uv[1], uv2: uv[2],
-            material_id: mat_id, _pad: 0,
-        });
-    }
-    tris
-}
-
 fn create_scene_environment(
     obj_path: &str,
 ) -> (
@@ -1122,7 +1068,7 @@ fn create_scene_environment(
 
     // Load scene textures from Tex/ directory
     let obj_dir = Path::new(obj_path).parent().unwrap_or(Path::new("."));
-    let (tex_info, tex_data_vec) = load_scene_textures(obj_dir);
+    let (mut tex_info, mut tex_data_vec) = load_scene_textures(obj_dir);
 
     // Assign tex_id by material NAME number (材質N → N, uses tex_map)
     // Material properties verified against Ray渲染材质包/*.fx
@@ -1183,7 +1129,34 @@ fn create_scene_environment(
         }
     }
 
-    // Bounding box of the scene triangles
+    // ── Load character model (ayaka) and place at courtyard centre ──
+    let char_mat_offset = materials.len() as u32;
+    let char_path = if Path::new("../assets/ayaka.obj").exists() { "../assets/ayaka.obj" } else { "assets/ayaka.obj" };
+    let (mut char_tris, char_mats, char_mat_names) = load_obj(char_path, char_mat_offset);
+    let char_obj_dir = Path::new(char_path).parent().unwrap_or(Path::new("."));
+    let (char_texs, char_tdata) = load_textures(&char_mat_names, char_obj_dir);
+    // Merge character textures
+    let char_tex_base = tex_info.len() as u32;
+    for ct in &char_texs {
+        tex_info.push(GpuTexture { data_offset: ct.data_offset + tex_data_vec.len() as u32, ..*ct });
+    }
+    tex_data_vec.extend_from_slice(&char_tdata);
+    for m in char_mats { materials.push(m); }
+    // DEBUG: all character materials = yellow
+    for (i, _name) in char_mat_names.iter().enumerate() {
+        let mi = char_mat_offset as usize + i;
+        materials[mi].tex_id = 0;
+        materials[mi].fuzz = 0.0; materials[mi].ref_idx = 1.0; materials[mi].material_type = 0;
+        materials[mi].albedo = [1.0, 1.0, 0.0, 0.0]; // bright yellow
+    }
+
+    // Compute character bounding box + place at scene centre
+    let mut cmin = [f32::MAX;3]; let mut cmax = [f32::MIN;3];
+    for t in &char_tris { for a in 0..3 { cmin[a]=cmin[a].min(t.v0[a]).min(t.v1[a]).min(t.v2[a]); cmax[a]=cmax[a].max(t.v0[a]).max(t.v1[a]).max(t.v2[a]); } }
+    let char_cx = (cmin[0]+cmax[0])/2.0; let char_cz = (cmin[2]+cmax[2])/2.0;
+    let char_h = cmax[1] - cmin[1];
+
+    // Bounding box of the scene triangles (compute early for character placement)
     let mut bmin = [f32::MAX; 3];
     let mut bmax = [f32::MIN; 3];
     for t in &triangles {
@@ -1198,6 +1171,41 @@ fn create_scene_environment(
     let model_size = (bmax[0] - bmin[0])
         .max(bmax[1] - bmin[1])
         .max(bmax[2] - bmin[2]);
+    // Scale character 3x around its centre
+    let char_cy = (cmin[1] + cmax[1]) / 2.0;
+    let scale = 3.0f32;
+    for t in char_tris.iter_mut() {
+        t.v0[0] = char_cx + (t.v0[0] - char_cx) * scale;
+        t.v0[1] = char_cy + (t.v0[1] - char_cy) * scale;
+        t.v0[2] = char_cz + (t.v0[2] - char_cz) * scale;
+        t.v1[0] = char_cx + (t.v1[0] - char_cx) * scale;
+        t.v1[1] = char_cy + (t.v1[1] - char_cy) * scale;
+        t.v1[2] = char_cz + (t.v1[2] - char_cz) * scale;
+        t.v2[0] = char_cx + (t.v2[0] - char_cx) * scale;
+        t.v2[1] = char_cy + (t.v2[1] - char_cy) * scale;
+        t.v2[2] = char_cz + (t.v2[2] - char_cz) * scale;
+    }
+    // Recompute character bbox after scaling
+    cmin = [f32::MAX;3]; cmax = [f32::MIN;3];
+    for t in &char_tris { for a in 0..3 { cmin[a]=cmin[a].min(t.v0[a]).min(t.v1[a]).min(t.v2[a]); cmax[a]=cmax[a].max(t.v0[a]).max(t.v1[a]).max(t.v2[a]); } }
+    // Place at courtyard centre, standing on ground
+    let char_offset_x = cx - (cmin[0]+cmax[0])/2.0 ;
+    let char_offset_y = bmin[1] - cmin[1] + 41.5;
+    let char_offset_z = cz - (cmin[2]+cmax[2])/2.0;
+    for t in char_tris.iter_mut() {
+        t.v0[0] += char_offset_x; t.v0[1] += char_offset_y; t.v0[2] += char_offset_z;
+        t.v1[0] += char_offset_x; t.v1[1] += char_offset_y; t.v1[2] += char_offset_z;
+        t.v2[0] += char_offset_x; t.v2[1] += char_offset_y; t.v2[2] += char_offset_z;
+    }
+    // Update bbox to include character
+    for t in &char_tris { for a in 0..3 {
+        bmin[a]=bmin[a].min(t.v0[a]).min(t.v1[a]).min(t.v2[a]);
+        bmax[a]=bmax[a].max(t.v0[a]).max(t.v1[a]).max(t.v2[a]);
+    }}
+    let char_tri_base = triangles.len();
+    triangles.extend(char_tris);
+    let char_tri_count = triangles.len() - char_tri_base;
+    println!("Character: {} tris, placed at ({:.1},{:.1},{:.1})", char_tri_count, cx, bmin[1], cz);
     println!(
         "Scene bbox: ({:.1},{:.1},{:.1}) - ({:.1},{:.1},{:.1})  size={:.1}",
         bmin[0], bmin[1], bmin[2], bmax[0], bmax[1], bmax[2], model_size
@@ -1333,8 +1341,8 @@ async fn run() {
 
     // Scene-mode: smaller output for faster iteration
     if render_scene {
-        image_width = 3200;
-        image_height = 3200;
+        image_width = 1200;
+        image_height = 1200;
         samples_per_pixel = 128;
         max_depth = 50;
     }
@@ -1402,9 +1410,9 @@ async fn run() {
             let angle = 25.0_f32.to_radians();
             let elev = model_size * 0.4;
             cam_origin = [
-                cx + dist * angle.sin(),
-                bmin[1] + model_size * 0.5 + elev,
-                cz + dist * angle.cos(),
+                cx,
+                bmin[1] + model_size * 0.5 + elev * 1.4,
+                cz + dist,
             ];
             cam_lookat = [cx, bmin[1] + model_size * 0.4, cz];
         } else {
