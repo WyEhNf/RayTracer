@@ -68,6 +68,8 @@ struct Uniforms {
     light_count: u32,
     particle_count: u32,
     particle_offset: u32,
+    falling_petal_count: u32,   // dynamic falling petals
+    _pad_u: u32,                // align to 16B
     background: vec4<f32>,
     tex_count: u32,
     batch_offset: u32,
@@ -90,6 +92,7 @@ struct Uniforms {
 @group(0) @binding(8) var<storage, read> textures: array<GpuTexture>;
 @group(0) @binding(9) var<storage, read> tex_data: array<f32>;
 @group(0) @binding(10) var<storage, read> particles: array<GpuParticle>;
+@group(0) @binding(11) var<storage, read> falling_petals: array<Triangle>;
 
 fn hash_u32(x: u32) -> u32 {
     var a = x;
@@ -166,11 +169,12 @@ fn onb_local(n: vec3<f32>, a: vec3<f32>) -> vec3<f32> {
     return a.x * u + a.y * v + a.z * w;
 }
 
-fn aabb_hit(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, bmin: vec3<f32>, bmax: vec3<f32>) -> bool {
+// Returns distance to AABB entry, or 1e30 if miss
+fn aabb_hit_dist(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, bmin: vec3<f32>, bmax: vec3<f32>) -> f32 {
     var tmn = tmin; var tmx = tmax;
     for (var a: u32 = 0u; a < 3u; a++) {
         if abs(rd[a]) < 1e-12 {
-            if ro[a] < bmin[a] || ro[a] > bmax[a] { return false; }
+            if ro[a] < bmin[a] || ro[a] > bmax[a] { return 1e30; }
             continue;
         }
         let inv = 1.0 / rd[a];
@@ -178,9 +182,9 @@ fn aabb_hit(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, bmin: vec3<f32>,
         var t1 = (bmax[a] - ro[a]) * inv;
         if inv < 0.0 { let t = t0; t0 = t1; t1 = t; }
         tmn = max(t0, tmn); tmx = min(t1, tmx);
-        if tmx <= tmn { return false; }
+        if tmx <= tmn { return 1e30; }
     }
-    return true;
+    return tmn;
 }
 
 fn hit_sphere(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, s: Sphere) -> f32 {
@@ -196,10 +200,9 @@ fn hit_sphere(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, s: Sphere) -> 
     return root;
 }
 
-fn hit_particle(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, p_idx: u32, seed: ptr<function, u32>) -> f32 {
+fn hit_particle(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, p_idx: u32, r_time: f32) -> f32 {
     let p = particles[p_idx - u.particle_offset];
-    let t_rand = rand(seed);
-    let center = mix(p.pos_t0.xyz, p.pos_t1.xyz, t_rand);
+    let center = mix(p.pos_t0.xyz, p.pos_t1.xyz, r_time);
     let oc = ro - center;
     let a = dot(rd, rd);
     let hb = dot(oc, rd);
@@ -236,24 +239,41 @@ fn hit_tri(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, tri: Triangle,
 
 struct Hit { t: f32, n: vec3<f32>, ff: bool, mid: u32, uv: vec2<f32>, }
 
-fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<function, u32>) -> Hit {
+fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, r_time: f32) -> Hit {
     var result: Hit;
     result.t = tmax; result.mid = 0u; result.n = vec3<f32>(0.0); result.ff = false;
 
     if u.bvh_node_count > 0u {
-        var stack: array<u32, 128>;
+        var stack: array<u32, 256>;
         var sp: u32 = 0u;
-        stack[sp] = 0u; sp = 1u;
-        for (var iter: u32 = 0u; iter < 200000u && sp > 0u; iter++) {
+        let root_node = bvh_nodes[0u];
+        if aabb_hit_dist(ro, rd, tmin, result.t, root_node.bbox_min, root_node.bbox_max) < 1e29 {
+            stack[sp] = 0u; sp = 1u;
+        }
+        for (var iter: u32 = 0u; iter < 2000u && sp > 0u; iter++) {
             sp = sp - 1u;
             let ni = stack[sp];
             let node = bvh_nodes[ni];
-            if !aabb_hit(ro, rd, tmin, result.t, node.bbox_min, node.bbox_max) { continue; }
             if (node.primitive_count & 0x80000000u) != 0u {
                 let left = node.left_or_first;
                 let right = node.primitive_count & 0x7FFFFFFFu;
-                stack[sp] = right; sp = sp + 1u;
-                stack[sp] = left; sp = sp + 1u;
+                let left_node = bvh_nodes[left];
+                let right_node = bvh_nodes[right];
+                let d_left = aabb_hit_dist(ro, rd, tmin, result.t, left_node.bbox_min, left_node.bbox_max);
+                let d_right = aabb_hit_dist(ro, rd, tmin, result.t, right_node.bbox_min, right_node.bbox_max);
+                if d_left < 1e29 && d_right < 1e29 {
+                    if d_left < d_right {
+                        stack[sp] = right; sp = sp + 1u;
+                        stack[sp] = left; sp = sp + 1u;
+                    } else {
+                        stack[sp] = left; sp = sp + 1u;
+                        stack[sp] = right; sp = sp + 1u;
+                    }
+                } else if d_left < 1e29 {
+                    stack[sp] = left; sp = sp + 1u;
+                } else if d_right < 1e29 {
+                    stack[sp] = right; sp = sp + 1u;
+                }
             } else {
                 let first = node.left_or_first;
                 let count = node.primitive_count;
@@ -264,10 +284,8 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<funct
                         let si = idx + i;
                         let s = spheres[si];
                         var t: f32;
-                        var is_part = false;
                         if si >= u.particle_offset && si < u.particle_offset + u.particle_count {
-                            t = hit_particle(ro, rd, tmin, result.t, si, seed);
-                            is_part = true;
+                            t = hit_particle(ro, rd, tmin, result.t, si, r_time);
                         } else {
                             t = hit_sphere(ro, rd, tmin, result.t, s);
                         }
@@ -301,10 +319,8 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<funct
         for (var i: u32 = 0u; i < u.sphere_count; i++) {
             let s = spheres[i];
             var t: f32;
-            var is_part = false;
             if i >= u.particle_offset && i < u.particle_offset + u.particle_count {
-                t = hit_particle(ro, rd, tmin, result.t, i, seed);
-                is_part = true;
+                t = hit_particle(ro, rd, tmin, result.t, i, r_time);
             } else {
                 t = hit_sphere(ro, rd, tmin, result.t, s);
             }
@@ -330,6 +346,18 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<funct
                 result.n = select(-norm2, norm2, result.ff);
                 result.uv = uv2;
             }
+        }
+    }
+    // Dynamic falling petals: linear scan (max 64 tris, no BVH needed)
+    for (var pi: u32 = 0u; pi < u.falling_petal_count; pi++) {
+        let tri = falling_petals[pi];
+        var uv: vec2<f32>; var norm: vec3<f32>;
+        let t = hit_tri(ro, rd, tmin, result.t, tri, &uv, &norm);
+        if t < result.t {
+            result.t = t; result.mid = tri.material_id;
+            result.ff = dot(rd, norm) < 0.0;
+            result.n = select(-norm, norm, result.ff);
+            result.uv = uv;
         }
     }
     return result;
@@ -489,14 +517,14 @@ fn sky_color(rd: vec3<f32>) -> vec3<f32> {
     return sky_base + glow_wide + sun_disk;
 }
 
-fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32> {
+fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>) -> vec3<f32> {
     var col = vec3<f32>(0.0);
     var thr = vec3<f32>(1.0);
     var ro2 = ro; var rd2 = rd;
     var in_water = false;
 
     for (var d: u32 = 0u; d < u.max_depth; d++) {
-        let hit = hit_world(ro2, rd2, 0.001, 1e30, seed);
+        let hit = hit_world(ro2, rd2, 0.001, 1e30, r_time);
 
         if in_water {
             let sigma = vec3<f32>(0.35, 0.06, 0.025);
@@ -608,17 +636,16 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
                 }
             }
 
-            // ── Petal 3D: UV-driven pillow + per-petal random normal ──
+            // ── Petal 3D: tangent-space pillow + per-petal random tilt ──
             let uv_center = vec2<f32>(0.5);
             let uv_dist = length(hit.uv - uv_center);
             let alpha_edge = 1.0 - smoothstep(0.0, 0.45, uv_dist);
             let thickness = mix(0.003, 0.035, alpha_edge);
             let pillow_offset = (hit.uv - uv_center) * 0.20;
-            // Per-petal random tilt: hash world position → unique normal perturbation
             let hx = hash3(p * 50.0 + vec3<f32>(0.0, 1.7, 3.1));
             let hy = hash3(p * 50.0 + vec3<f32>(5.3, 0.0, 2.7));
-            let petal_tilt = vec3<f32>((hx - 0.5) * 0.25, (hy - 0.5) * 0.25, 0.0);
-            let petal_n = normalize(hit.n + vec3<f32>(pillow_offset.x, pillow_offset.y, 0.0) + petal_tilt);
+            let local_perturb = vec3<f32>(pillow_offset.x + (hx-0.5)*0.25, pillow_offset.y + (hy-0.5)*0.25, 1.0);
+            let petal_n = normalize(onb_local(hit.n, local_perturb));
 
             let tex_color = sample_texture(mat.tex_id, hit.uv);
             let base_color = mat.albedo.xyz * tex_color;
@@ -709,7 +736,7 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             let to_light_vec = light_pt - shadow_ro2;
             let dist_to_light = length(to_light_vec);
             let wi2 = to_light_vec / dist_to_light;
-            let lhit = hit_world(shadow_ro2, wi2, 0.001, dist_to_light - 0.001, seed);
+            let lhit = hit_world(shadow_ro2, wi2, 0.001, dist_to_light - 0.001, r_time);
             if lhit.t >= dist_to_light - 0.002 {
                 var cos_recv = max(cos_raw, 0.0);
                 if cos_raw < 0.0 && petal_t > 0.0 {
@@ -808,6 +835,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let rx = rand(&seed);
         let ry = rand(&seed);
+        let r_time = rand(&seed);  // per-ray motion-blur timestamp
 
         var du: f32;
         var dv: f32;
@@ -823,7 +851,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         let orig = cam.origin.xyz;
         let dir = normalize(cam.lower_left_corner.xyz + du * cam.horizontal.xyz + dv * cam.vertical.xyz - cam.origin.xyz);
-        acc = acc + ray_color(orig, dir, &seed);
+        acc = acc + ray_color(orig, dir, r_time, &seed);
     }
     let idx = y * u.image_width + x;
     output[idx] = output[idx] + vec4<f32>(acc.x, acc.y, acc.z, 0.0);

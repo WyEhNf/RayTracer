@@ -23,7 +23,8 @@ struct GpuUniforms {
     light_count: u32,
     particle_count: u32,
     particle_offset: u32,
-    _pad_particle: [u32; 2], // WGSL vec4 alignment
+    falling_petal_count: u32,
+    _pad_u: u32,              // WGSL vec4 alignment
     background: [f32; 4],
     tex_count: u32,
     batch_offset: u32,
@@ -68,6 +69,16 @@ struct GpuTriangle {
     uv2: [f32; 2],
     material_id: u32,
     _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct GpuPetalTri {
+    v0: [f32; 4], n0: [f32; 4],
+    v1: [f32; 4], n1: [f32; 4],
+    v2: [f32; 4], n2: [f32; 4],
+    uv0: [f32; 2], uv1: [f32; 2], uv2: [f32; 2],
+    material_id: u32, _pad: u32,
 }
 
 #[repr(C)]
@@ -161,18 +172,33 @@ fn build_all_bvh_reordered(
 }
 
 fn emit_leaf_nodes(prims: &[BvhPrim], bmin:[f32;3], bmax:[f32;3], spheres: &mut Vec<GpuSphere>, triangles: &mut Vec<GpuTriangle>) -> Vec<GpuBvhNode> {
+    const INTERNAL_FLAG: u32 = 0x80000000;
     let mut out = Vec::new();
-    let tri_count = prims.iter().filter(|p| p.is_triangle).count();
-    if tri_count > 0 {
+    let tri_prims: Vec<usize> = prims.iter().enumerate().filter(|(_,p)| p.is_triangle).map(|(i,_)| i).collect();
+    let sph_prims: Vec<usize> = prims.iter().enumerate().filter(|(_,p)| !p.is_triangle).map(|(i,_)| i).collect();
+
+    if !tri_prims.is_empty() && !sph_prims.is_empty() {
+        // Both types: create wrapper internal node → strict binary tree
+        let tri_start = triangles.len() as u32;
+        for &idx in &tri_prims { let p = &prims[idx]; triangles.push(GpuTriangle{..triangles[p.index as usize]}); }
+        let tri_node = GpuBvhNode{bbox_min:bmin, left_or_first:tri_start|INTERNAL_FLAG, bbox_max:bmax, primitive_count:tri_prims.len() as u32};
+
+        let sph_start = spheres.len() as u32;
+        for &idx in &sph_prims { let p = &prims[idx]; spheres.push(GpuSphere{..spheres[p.index as usize]}); }
+        let sph_node = GpuBvhNode{bbox_min:bmin, left_or_first:sph_start, bbox_max:bmax, primitive_count:sph_prims.len() as u32};
+
+        // Wrapper internal node: left=tri(1), right=sph(2) within this subtree
+        out.push(GpuBvhNode{bbox_min:bmin, left_or_first:1, bbox_max:bmax, primitive_count:2|INTERNAL_FLAG});
+        out.push(tri_node);
+        out.push(sph_node);
+    } else if !tri_prims.is_empty() {
         let start = triangles.len() as u32;
-        for p in prims.iter().filter(|p| p.is_triangle) { triangles.push(GpuTriangle{..triangles[p.index as usize]}); }
-        out.push(GpuBvhNode{bbox_min:bmin, left_or_first:start|0x80000000u32, bbox_max:bmax, primitive_count:tri_count as u32});
-    }
-    let sph_count = prims.len()-tri_count;
-    if sph_count > 0 {
+        for &idx in &tri_prims { let p = &prims[idx]; triangles.push(GpuTriangle{..triangles[p.index as usize]}); }
+        out.push(GpuBvhNode{bbox_min:bmin, left_or_first:start|INTERNAL_FLAG, bbox_max:bmax, primitive_count:tri_prims.len() as u32});
+    } else if !sph_prims.is_empty() {
         let start = spheres.len() as u32;
-        for p in prims.iter().filter(|p|!p.is_triangle) { spheres.push(GpuSphere{..spheres[p.index as usize]}); }
-        out.push(GpuBvhNode{bbox_min:bmin, left_or_first:start, bbox_max:bmax, primitive_count:sph_count as u32});
+        for &idx in &sph_prims { let p = &prims[idx]; spheres.push(GpuSphere{..spheres[p.index as usize]}); }
+        out.push(GpuBvhNode{bbox_min:bmin, left_or_first:start, bbox_max:bmax, primitive_count:sph_prims.len() as u32});
     }
     out
 }
@@ -253,7 +279,7 @@ fn build_unified_bvh_reorder(
     if best_cost >= prims.len() as f32 { return emit_leaf_nodes(prims, bmin, bmax, spheres, triangles); }
 
     // Partition at best_bin boundary
-    let split_v = cmin + (best_bin as f32 + 0.5) * cext / NB as f32;
+    let split_v = cmin + (best_bin as f32) * cext / NB as f32;
     let (mut i, mut j) = (0usize, prims.len()-1);
     loop {
         while i < prims.len() && prims[i].center[axis] < split_v { i += 1; }
@@ -1021,6 +1047,49 @@ fn generate_petal_particles(
 
     println!("Generated {} petal particles ({} bokeh)", count + bokeh_count, bokeh_count);
     (particles, spheres)
+}
+
+fn build_falling_petals(emitters: &[[f32;3]; 3], petal_count: u32, time: f32, mat_id: u32) -> Vec<GpuPetalTri> {
+    use vec3::random_double;
+    let mut tris = Vec::new();
+    let size = 0.25;
+    let local_v = [[-size,0.0,-size], [size,0.0,-size], [0.0,0.0,size]];
+    let uv = [[0.0,0.0], [1.0,0.0], [0.5,1.0]];
+    let normal: [f32;4] = [0.0,1.0,0.0,0.0];
+
+    for i in 0..petal_count {
+        let ei = (random_double() * emitters.len() as f32) as usize % emitters.len();
+        let emit = emitters[ei];
+        let age = random_double() * 8.0; // 0-8 seconds old
+        let wind_x = 0.5 + (time*0.5 + age).sin() * 0.3;
+        let wind_z = 0.2 + (time*0.3 + age).cos() * 0.2;
+        let fall_speed = 1.5 + random_double() * 2.0;
+        let swing = (time*4.0 + age*7.0).sin() * 0.4;
+
+        let px = emit[0] + (random_double()-0.5)*2.0 + wind_x*age + (time*3.0+age).cos()*0.5*age;
+        let py = emit[1] - fall_speed*age;
+        let pz = emit[2] + (random_double()-0.5)*2.0 + wind_z*age + swing*age;
+        if py < 0.5 { continue; }
+
+        let rot_y = age*1.7 + (time*2.0).sin()*0.6;
+        let rot_x = (time*5.0 + age*11.0).cos()*0.8;
+        let cos_y = rot_y.cos(); let sin_y = rot_y.sin();
+        let cos_x = rot_x.cos(); let sin_x = rot_x.sin();
+
+        let transform = |v: [f32;3]| -> [f32;4] {
+            let y1 = v[1]*cos_x - v[2]*sin_x;
+            let z1 = v[1]*sin_x + v[2]*cos_x;
+            let x2 = v[0]*cos_y + z1*sin_y;
+            let z2 = -v[0]*sin_y + z1*cos_y;
+            [x2+px, y1+py, z2+pz, 1.0]
+        };
+        tris.push(GpuPetalTri {
+            v0: transform(local_v[0]), n0: normal, v1: transform(local_v[1]), n1: normal,
+            v2: transform(local_v[2]), n2: normal, uv0: uv[0], uv1: uv[1], uv2: uv[2],
+            material_id: mat_id, _pad: 0,
+        });
+    }
+    tris
 }
 
 fn create_scene_environment(
