@@ -1087,27 +1087,27 @@ fn create_scene_environment(
         m.ref_idx = 1.0;
 
         match tid {
-            // ── Clear Coat (type 4): lacquered wood — sharp Fresnel coat + diffuse base ──
-            1 | 3 | 7 | 8 | 11 | 34 => { m.material_type = 4; m.ref_idx = 1.5; m.fuzz = 0.70; m.albedo = [0.55, 0.55, 0.55, 0.0]; } // matte lacquer
-
             // ── Metal/Glossy (type 1) ──
-            16 => { m.material_type = 1; m.fuzz = 0.2; }   // fx: smoothness=0.8
-            35 => { m.material_type = 1; m.fuzz = 0.3; }   // fx: smoothness=0.7 + α=Tex_0006_A
+            16 => { m.material_type = 1; m.fuzz = 0.2; }
+            35 => { m.material_type = 1; m.fuzz = 0.3; }
 
             // ── Dielectric/Glass (type 2) ──
-            17 => { m.material_type = 2; m.ref_idx = 1.45; m.fuzz = 0.0; }  // fx: smooth=1.0, baseSpec=0.02
-            33 => { m.material_type = 2; m.ref_idx = 1.333; m.fuzz = 0.15; m.albedo = [0.1, 0.25, 0.4, 0.0]; }  // Water: IOR=1.333 + wave + Beer
+            17 => { m.material_type = 2; m.ref_idx = 1.45; m.fuzz = 0.0; }
+            33 => { m.material_type = 2; m.ref_idx = 1.333; m.fuzz = 0.15; m.albedo = [0.1, 0.25, 0.4, 0.0]; }
 
-            // ── SSS Petal (type 7): Random Walk subsurface scattering ──
-            14 | 31 | 39 | 40 => { m.material_type = 7; m.fuzz = 0.5; m.albedo = [1.0, 0.75, 0.7, 0.0]; }
+            // ── Petal translucency (type 0 + fuzz) ──
+            14 | 31 | 39 | 40 => { m.material_type = 0; m.fuzz = 0.63; m.albedo = [1.0, 0.82, 0.80, 0.0]; }
 
-            // ── Procedural Stone (type 5): bump-mapped rock surface ──
+            // ── Procedural Stone (type 5): bump-mapped rock ──
             5 | 10 | 21..=30 | 38 => { m.material_type = 5; m.fuzz = 0.6; }
 
-            // ── Procedural Wood (type 6): anisotropic grain + bump ──
-            19 | 20 | 32 => { m.material_type = 6; m.fuzz = 0.5; }
+            // ── Clear Coat (type 4): lacquered wood ──
+            1 | 3 | 7 | 8 | 11 | 34 => { m.material_type = 4; m.ref_idx = 1.5; m.fuzz = 0.70; m.albedo = [0.55, 0.55, 0.55, 0.0]; }
 
-            _ => {} // all others: diffuse (type 0), smoothness=0.0
+            // ── Procedural Wood (type 6) ──
+            19 | 20 | 32 => { m.material_type = 6; m.fuzz = 0.7; }
+
+            _ => {}
         }
 
             let type_name = match m.material_type {
@@ -1233,16 +1233,9 @@ fn create_scene_environment(
 
     let s = model_size;
 
-    // Single sun light — placed far in the dusk sun direction
-    // Sun dir: ~(0.5, 0.15, -0.7) — low western sky at dusk
-    let sun_dir = [0.5_f32, 0.15, -0.7];
-    let sun_len = (sun_dir[0]*sun_dir[0] + sun_dir[1]*sun_dir[1] + sun_dir[2]*sun_dir[2]).sqrt();
-    let sun_dx = sun_dir[0] / sun_len;
-    let sun_dy = sun_dir[1] / sun_len;
-    let sun_dz = sun_dir[2] / sun_len;
-    let sun_dist = s * 10.0;
-    add_light([cx + sun_dx * sun_dist, bmax[1] + sun_dy * sun_dist + s * 0.5, cz + sun_dz * sun_dist],
-              s * 3.0, [40.0, 30.0, 18.0]);  // warm dusk sun
+    // Single sun — fixed position behind scene
+    add_light([cx + 300.0, 40.0, cz + 300.0],
+              20.0, [2000.0, 1400.0, 600.0]);  // 4× radius, 10× brightness
 
     println!(
         "Scene: {} spheres, {} triangles, {} materials, {} lights",
@@ -1341,9 +1334,9 @@ async fn run() {
 
     // Scene-mode: smaller output for faster iteration
     if render_scene {
-        image_width = 1200;
-        image_height = 1200;
-        samples_per_pixel = 128;
+        image_width = 6144;
+        image_height = 6144;
+        samples_per_pixel = 246;
         max_depth = 50;
     }
 
@@ -1404,15 +1397,16 @@ async fn run() {
             // dist so that model_size occupies 90% of the vertical frame
             cam_vfov = 40.0;
             let half_h = (cam_vfov / 2.0).to_radians().tan();
-            let desired_visible = model_size / 1.08; // model overfills the frame
+            let desired_visible = model_size / 1.2; // closer = larger denominator
             let dist = (desired_visible / 2.0) / half_h;
             // Elevated 25° front view
             let angle = 25.0_f32.to_radians();
             let elev = model_size * 0.4;
+            let yaw = 0.0_f32.to_radians();
             cam_origin = [
-                cx,
-                bmin[1] + model_size * 0.5 + elev * 1.4,
-                cz + dist,
+                cx + dist * yaw.sin(),
+                bmin[1] + model_size * 0.4 + 40.0,  // slightly elevated
+                cz + dist * yaw.cos(),
             ];
             cam_lookat = [cx, bmin[1] + model_size * 0.4, cz];
         } else {
@@ -1483,7 +1477,7 @@ async fn run() {
         tile_end_x: 0,
         tile_end_y: 0,
         _pad1: 0,
-        sun_dir: [0.580, 0.174, -0.812, 0.0], // dusk sun: low western sky
+        sun_dir: [0.662, 0.35, 0.662, 0.0], // sun at camera side
     };
 
     println!(

@@ -499,7 +499,7 @@ fn sky_color(rd: vec3<f32>) -> vec3<f32> {
     let glow_wide = pow(sun_cos, 6.0) * vec3<f32>(1.0, 0.3, 0.05) * 2.0;
     let sun_disk  = pow(sun_cos, 400.0) * vec3<f32>(1.0, 0.85, 0.4) * 15.0;
 
-    return sky_base + glow_wide + sun_disk;
+    return sky_base * 0.25 + glow_wide * 0.35 + sun_disk;
 }
 
 fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>) -> vec3<f32> {
@@ -534,13 +534,13 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
         var use_fuzz = mat.fuzz;
         if mt == 5u {
             let fv = stone_field(p);
-            use_n = bump_normal(p, hit.n, fv, 0.010, 0.06);
+            use_n = bump_normal(p, hit.n, fv, 0.010, 0.04);
             use_fuzz = mix(0.4, 0.75, fv);
         }
         if mt == 6u {
             let wv = wood_field(p);
-            use_n = bump_normal(p, hit.n, wv, 0.008, 0.08);
-            use_fuzz = 0.50;
+            use_n = bump_normal(p, hit.n, wv, 0.008, 0.03);
+            use_fuzz = 0.70;
         }
 
         if mt == 3u {
@@ -647,8 +647,8 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
                 rd2 = normalize(rough_refl); thr = thr * base_color; ro2 = p + petal_n * 0.002; continue;
             }
 
-            let sigma_a = vec3<f32>(0.005, 0.07, 0.012);
-            let sigma_s = 28.0;
+            let sigma_a = vec3<f32>(0.001, 0.008, 0.003);  // minimal absorption
+            let sigma_s = 6.0;   // long mean free path → 0-1 scatters → clear
             let sigma_t = sigma_s + sigma_a;
             let albedo_s = sigma_s / sigma_t;
             let sigma_t_avg = (sigma_t.x+sigma_t.y+sigma_t.z)/3.0;
@@ -697,6 +697,10 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
             continue;
         }
         // ── Diffuse (mt == 0u or mt == 4u fallthrough) ──
+        // Petal gaps: stochastic holes between clustered petals (diffuse only, not wood/stone)
+        if mt == 0u && mat.fuzz > 0.0 && hash3(p * 30.0 + vec3<f32>(0.3, 0.7, 0.1)) > 0.55 {
+            ro2 = p + rd2 * 0.01; continue;
+        }
         let tex_color = sample_texture(mat.tex_id, hit.uv);
         let surface_color = mat.albedo.xyz * tex_color;
 
@@ -748,7 +752,8 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
         var transmission_color = vec3<f32>(1.0);
         if petal_t2 > 0.0 && rand(seed) < petal_t2 {
             scatter_n = -use_n;
-            transmission_color = vec3<f32>(1.0, 0.8, 0.83);
+            let sss_dist = abs(dot(rd2, use_n)) * 0.02;
+            transmission_color = exp(-vec3<f32>(0.2, 2.5, 4.5) * sss_dist);
         }
         var sdir: vec3<f32>;
         if u.light_count > 0u && rand(seed) < 0.5 {
@@ -778,7 +783,18 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
         }
         if petal_t2 > 0.0 && rand(seed) < petal_t2 {
             sdir = -sdir;
-            thr = thr * transmission_color;
+            // 2-step mini random walk for subtle SSS
+            var sss_thr = vec3<f32>(1.0);
+            var sss_pos = p;
+            var sss_dir2 = sdir;
+            for (var ss: u32 = 0u; ss < 2u; ss++) {
+                let d_free = -log(max(rand(seed), 0.001)) / 14.0;
+                sss_pos = sss_pos + d_free * sss_dir2;
+                sss_thr *= exp(-vec3<f32>(0.15, 2.0, 4.0) * d_free);
+                sss_dir2 = sample_hg(sss_dir2, 0.5, seed);
+            }
+            sdir = normalize(sss_dir2);
+            thr = thr * sss_thr * transmission_color;
         }
         if mt == 5u {
             let refl = reflect(normalize(rd2), use_n);
