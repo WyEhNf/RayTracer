@@ -160,6 +160,23 @@ fn build_all_bvh_reordered(
     nodes
 }
 
+fn emit_leaf_nodes(prims: &[BvhPrim], bmin:[f32;3], bmax:[f32;3], spheres: &mut Vec<GpuSphere>, triangles: &mut Vec<GpuTriangle>) -> Vec<GpuBvhNode> {
+    let mut out = Vec::new();
+    let tri_count = prims.iter().filter(|p| p.is_triangle).count();
+    if tri_count > 0 {
+        let start = triangles.len() as u32;
+        for p in prims.iter().filter(|p| p.is_triangle) { triangles.push(GpuTriangle{..triangles[p.index as usize]}); }
+        out.push(GpuBvhNode{bbox_min:bmin, left_or_first:start|0x80000000u32, bbox_max:bmax, primitive_count:tri_count as u32});
+    }
+    let sph_count = prims.len()-tri_count;
+    if sph_count > 0 {
+        let start = spheres.len() as u32;
+        for p in prims.iter().filter(|p|!p.is_triangle) { spheres.push(GpuSphere{..spheres[p.index as usize]}); }
+        out.push(GpuBvhNode{bbox_min:bmin, left_or_first:start, bbox_max:bmax, primitive_count:sph_count as u32});
+    }
+    out
+}
+
 fn build_unified_bvh_reorder(
     prims: &mut [BvhPrim],
     leaf_max: usize,
@@ -181,47 +198,70 @@ fn build_unified_bvh_reorder(
     }}
 
     if prims.len() <= leaf_max {
-        let mut out: Vec<GpuBvhNode> = Vec::new();
-
-        // Triangles in this leaf
-        let tri_count = prims.iter().filter(|p| p.is_triangle).count();
-        if tri_count > 0 {
-            let start = triangles.len() as u32;
-            for p in prims.iter().filter(|p| p.is_triangle) {
-                triangles.push(GpuTriangle { ..triangles[p.index as usize] });
-            }
-            out.push(GpuBvhNode {
-                bbox_min: bmin,
-                left_or_first: start | 0x80000000u32,
-                bbox_max: bmax,
-                primitive_count: tri_count as u32,
-            });
-        }
-
-        // Spheres in this leaf
-        let sph_count = prims.len() - tri_count;
-        if sph_count > 0 {
-            let start = spheres.len() as u32;
-            for p in prims.iter().filter(|p| !p.is_triangle) {
-                spheres.push(GpuSphere { ..spheres[p.index as usize] });
-            }
-            out.push(GpuBvhNode {
-                bbox_min: bmin,
-                left_or_first: start, // 0 flag = sphere
-                bbox_max: bmax,
-                primitive_count: sph_count as u32,
-            });
-        }
-
-        return out;
+        return emit_leaf_nodes(prims, bmin, bmax, spheres, triangles);
     }
 
     let ext = [bmax[0]-bmin[0], bmax[1]-bmin[1], bmax[2]-bmin[2]];
     let axis = if ext[0] >= ext[1] && ext[0] >= ext[2] { 0 }
         else if ext[1] >= ext[2] { 1 } else { 2 };
 
-    prims.sort_by(|a, b| a.center[axis].partial_cmp(&b.center[axis]).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = prims.len() / 2;
+    // ── 16-bin SAH split ──
+    const NB: usize = 16;
+    let mut bin_cnt = [0u32; NB];
+    let mut bin_min: [[f32; 3]; NB] = [[f32::MAX; 3]; NB];
+    let mut bin_max: [[f32; 3]; NB] = [[f32::MIN; 3]; NB];
+
+    let mut cmin = f32::MAX; let mut cmax = f32::MIN;
+    for p in prims.iter() { cmin = cmin.min(p.center[axis]); cmax = cmax.max(p.center[axis]); }
+    let cext = cmax - cmin;
+    if cext < 1e-6 { return emit_leaf_nodes(prims, bmin, bmax, spheres, triangles); }
+
+    let inv_bw = NB as f32 / cext;
+    for (i, p) in prims.iter().enumerate() {
+        let b = (((p.center[axis] - cmin) * inv_bw) as usize).min(NB - 1);
+        bin_cnt[b] += 1;
+        for a in 0..3 { bin_min[b][a] = bin_min[b][a].min(p.bbox_min[a]); bin_max[b][a] = bin_max[b][a].max(p.bbox_max[a]); }
+        _ = i;
+    }
+
+    // Prefix sweep: left→right accumulated bounds + counts
+    let mut lcnt = [0u32; NB-1]; let mut lmin = [f32::MAX;3]; let mut lmax = [f32::MIN;3];
+    let mut lbnd: [([f32;3],[f32;3]); NB-1] = [([f32::MAX;3],[f32::MIN;3]); NB-1];
+    let mut cl = 0u32;
+    for i in 0..NB-1 { cl += bin_cnt[i]; lcnt[i] = cl;
+        for a in 0..3 { lmin[a]=lmin[a].min(bin_min[i][a]); lmax[a]=lmax[a].max(bin_max[i][a]); }
+        lbnd[i] = (lmin, lmax); }
+
+    // Suffix sweep: find best split
+    let node_sa = 2.0*((bmax[0]-bmin[0])*(bmax[1]-bmin[1])+(bmax[1]-bmin[1])*(bmax[2]-bmin[2])+(bmax[2]-bmin[2])*(bmax[0]-bmin[0]));
+    let mut best_cost = f32::MAX; let mut best_bin = 0u32;
+    let mut rmin = [f32::MAX;3]; let mut rmax = [f32::MIN;3]; let mut cr = 0u32;
+    for i in (1..NB).rev() {
+        cr += bin_cnt[i];
+        for a in 0..3 { rmin[a]=rmin[a].min(bin_min[i][a]); rmax[a]=rmax[a].max(bin_max[i][a]); }
+        let nl = lcnt[i-1] as f32; let nr = cr as f32;
+        if nl < 1.0 || nr < 1.0 { continue; }
+        let (lm,lM) = lbnd[i-1]; let le = [lM[0]-lm[0],lM[1]-lm[1],lM[2]-lm[2]];
+        let ls = 2.0*(le[0]*le[1]+le[1]*le[2]+le[2]*le[0]);
+        let re = [rmax[0]-rmin[0],rmax[1]-rmin[1],rmax[2]-rmin[2]];
+        let rs = 2.0*(re[0]*re[1]+re[1]*re[2]+re[2]*re[0]);
+        let cost = 0.5 + (ls*nl + rs*nr)/node_sa;
+        if cost < best_cost { best_cost = cost; best_bin = i as u32; }
+    }
+
+    // SAH termination: stop if leaf is cheaper than split
+    if best_cost >= prims.len() as f32 { return emit_leaf_nodes(prims, bmin, bmax, spheres, triangles); }
+
+    // Partition at best_bin boundary
+    let split_v = cmin + (best_bin as f32 + 0.5) * cext / NB as f32;
+    let (mut i, mut j) = (0usize, prims.len()-1);
+    loop {
+        while i < prims.len() && prims[i].center[axis] < split_v { i += 1; }
+        while j > 0 && prims[j].center[axis] >= split_v { j = if j > 0 { j-1 } else { 0 }; if j == 0 { break; } }
+        if i >= j { break; }
+        prims.swap(i, j); i += 1; if j > 0 { j -= 1; }
+    }
+    let mid = if i == 0 { 1.min(prims.len()-1) } else if i >= prims.len() { prims.len()-1 } else { i };
     let (left_slice, right_slice) = prims.split_at_mut(mid);
     let mut left = build_unified_bvh_reorder(left_slice, leaf_max, spheres, triangles, _sphere_base, _tri_base);
     let mut right = build_unified_bvh_reorder(right_slice, leaf_max, spheres, triangles, _sphere_base, _tri_base);
@@ -1033,7 +1073,7 @@ fn create_scene_environment(
 
         match tid {
             // ── Clear Coat (type 4): lacquered wood — sharp Fresnel coat + diffuse base ──
-            1 | 3 | 7 | 8 | 11 | 34 => { m.material_type = 4; m.ref_idx = 1.5; m.fuzz = 0.35; m.albedo = [0.55, 0.55, 0.55, 0.0]; } // silk-matte lacquer
+            1 | 3 | 7 | 8 | 11 | 34 => { m.material_type = 4; m.ref_idx = 1.5; m.fuzz = 0.70; m.albedo = [0.55, 0.55, 0.55, 0.0]; } // matte lacquer
 
             // ── Metal/Glossy (type 1) ──
             16 => { m.material_type = 1; m.fuzz = 0.2; }   // fx: smoothness=0.8
@@ -1226,7 +1266,7 @@ async fn run() {
     if render_scene {
         image_width = 3200;
         image_height = 3200;
-        samples_per_pixel = 200;
+        samples_per_pixel = 128;
         max_depth = 50;
     }
 
@@ -1743,10 +1783,10 @@ async fn run() {
             let tr = lr * scale_tm;
             let tg = lg * scale_tm;
             let tb = lb * scale_tm;
-            // Gamma
-            let r = (256.0 * tr.sqrt().clamp(0.0, 0.999)) as u8;
-            let g = (256.0 * tg.sqrt().clamp(0.0, 0.999)) as u8;
-            let b = (256.0 * tb.sqrt().clamp(0.0, 0.999)) as u8;
+            // sRGB gamma (≈2.2)
+            let r = (256.0 * tr.powf(1.0/2.2).clamp(0.0, 0.999)) as u8;
+            let g = (256.0 * tg.powf(1.0/2.2).clamp(0.0, 0.999)) as u8;
+            let b = (256.0 * tb.powf(1.0/2.2).clamp(0.0, 0.999)) as u8;
             img.put_pixel(x, y, image::Rgb([r, g, b]));
         }
     }

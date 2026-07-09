@@ -241,10 +241,10 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<funct
     result.t = tmax; result.mid = 0u; result.n = vec3<f32>(0.0); result.ff = false;
 
     if u.bvh_node_count > 0u {
-        var stack: array<u32, 2048>;
+        var stack: array<u32, 128>;
         var sp: u32 = 0u;
         stack[sp] = 0u; sp = 1u;
-        for (var iter: u32 = 0u; iter < 2000000u && sp > 0u; iter++) {
+        for (var iter: u32 = 0u; iter < 200000u && sp > 0u; iter++) {
             sp = sp - 1u;
             let ni = stack[sp];
             let node = bvh_nodes[ni];
@@ -274,13 +274,7 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<funct
                         if t < result.t {
                             result.t = t; result.mid = s.material_id;
                             let p = ro + t * rd;
-                            var center = s.center.xyz;
-                            if is_part {
-                                let part = particles[si - u.particle_offset];
-                                let tr = rand(seed);
-                                center = mix(part.pos_t0.xyz, part.pos_t1.xyz, tr);
-                            }
-                            let on = (p - center) / s.radius;
+                            let on = (p - s.center.xyz) / s.radius;
                             result.ff = dot(rd, on) < 0.0;
                             result.n = select(-on, on, result.ff);
                         }
@@ -317,13 +311,7 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<funct
             if t < result.t {
                 result.t = t; result.mid = s.material_id;
                 let p = ro + t * rd;
-                var center = s.center.xyz;
-                if is_part {
-                    let part = particles[i - u.particle_offset];
-                    let tr = rand(seed);
-                    center = mix(part.pos_t0.xyz, part.pos_t1.xyz, tr);
-                }
-                let on = (p - center) / s.radius;
+                let on = (p - s.center.xyz) / s.radius;
                 result.ff = dot(rd, on) < 0.0;
                 result.n = select(-on, on, result.ff);
                 result.uv = vec2<f32>(0.0);
@@ -442,18 +430,14 @@ fn stone_field(p: vec3<f32>) -> f32 {
 }
 
 fn wood_field(p: vec3<f32>) -> f32 {
-    let w = vec3<f32>(
-        fbm(p * 2.0 + vec3<f32>(1.2,0,0), 2u),
-        fbm(p * 2.0 + vec3<f32>(3.4,0,0), 2u) * 0.1,
-        fbm(p * 2.0 + vec3<f32>(5.6,0,0), 2u));
-    let wp = p + w * 0.12;
-    let fiber = fbm(wp * vec3<f32>(16.0, 0.15, 16.0), 3u);
-    let r = length(wp.xz);
-    let ring = sin(r * 25.0 + fbm(wp * 2.0, 2u) * 4.0) * 0.5 + 0.5;
-    return mix(fiber, ring, 0.35);
+    // Isotropic wood grain — multi-scale FBM for rich surface detail
+    let base  = fbm(p * 2.5, 3u);                          // coarse grain
+    let grain = fbm(p * 8.0  + vec3<f32>(1.7, 2.3, 3.1), 3u); // medium detail
+    let micro = fbm(p * 22.0 + vec3<f32>(5.1, 1.3, 4.7), 2u);  // fine pores
+    return base * 0.35 + grain * 0.40 + micro * 0.25;
 }
 
-fn wood_roughness(p: vec3<f32>) -> f32 { return mix(0.4, 0.85, wood_field(p)); }
+fn wood_roughness(p: vec3<f32>) -> f32 { return mix(0.45, 0.85, wood_field(p)); }
 
 fn sample_hg(wo: vec3<f32>, g: f32, seed: ptr<function, u32>) -> vec3<f32> {
     let xi = rand(seed);
@@ -519,7 +503,7 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             if hit.t < 1e29 {
                 thr = thr * exp(-sigma * min(hit.t, 20.0));
             } else {
-                col = col + thr * vec3<f32>(0.02, 0.06, 0.10);
+                col = col + thr * sky_color(normalize(rd2)) * exp(-sigma * 5.0);
                 break;
             }
         }
@@ -542,8 +526,8 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
         }
         if mt == 6u {
             let wv = wood_field(p);
-            use_n = bump_normal(p, hit.n, wv, 0.005, 0.03);
-            use_fuzz = 0.30;
+            use_n = bump_normal(p, hit.n, wv, 0.008, 0.08);
+            use_fuzz = 0.50;
         }
 
         if mt == 3u {
@@ -604,15 +588,15 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             let ct = abs(dot(ud, hit.n));
             let r0 = (mat.ref_idx - 1.0) / (mat.ref_idx + 1.0);
             let r02_phys = r0 * r0;
-            let r02 = r02_phys * 2.5;
+            let r02 = r02_phys;            // physical Fresnel only (no boost)
             let fresnel = r02 + (1.0 - r02) * pow(1.0 - ct, 5.0);
             if rand(seed) < fresnel {
                 let refl = reflect(ud, hit.n);
                 let sdir = refl + coat_rough * rand_unit_vec(seed);
                 if dot(sdir, hit.n) <= 0.0 { break; }
-                rd2 = sdir; thr = thr * mix(vec3<f32>(1.0), base_color, 0.55); ro2 = p + hit.n * 0.002; continue;
+                rd2 = sdir; thr = thr * mix(vec3<f32>(1.0), base_color, 0.88); ro2 = p + hit.n * 0.002; continue;
             }
-            thr = thr * 0.75;
+            thr = thr * 0.92;  // minimal darkening — let the wood texture dominate
         }
         if mt == 7u {
             if rand(seed) < 0.15 {
@@ -624,19 +608,31 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
                 }
             }
 
+            // ── Petal 3D: UV-driven pillow + per-petal random normal ──
+            let uv_center = vec2<f32>(0.5);
+            let uv_dist = length(hit.uv - uv_center);
+            let alpha_edge = 1.0 - smoothstep(0.0, 0.45, uv_dist);
+            let thickness = mix(0.003, 0.035, alpha_edge);
+            let pillow_offset = (hit.uv - uv_center) * 0.20;
+            // Per-petal random tilt: hash world position → unique normal perturbation
+            let hx = hash3(p * 50.0 + vec3<f32>(0.0, 1.7, 3.1));
+            let hy = hash3(p * 50.0 + vec3<f32>(5.3, 0.0, 2.7));
+            let petal_tilt = vec3<f32>((hx - 0.5) * 0.25, (hy - 0.5) * 0.25, 0.0);
+            let petal_n = normalize(hit.n + vec3<f32>(pillow_offset.x, pillow_offset.y, 0.0) + petal_tilt);
+
             let tex_color = sample_texture(mat.tex_id, hit.uv);
             let base_color = mat.albedo.xyz * tex_color;
             let ior = 1.4;
             let ud = normalize(rd2);
-            let ct_enter = abs(dot(ud, hit.n));
+            let ct_enter = abs(dot(ud, petal_n));
             let r0 = (ior-1.0)/(ior+1.0); let r02 = r0*r0;
             let fresnel = r02 + (1.0-r02)*pow(1.0-ct_enter, 5.0);
 
             if rand(seed) < fresnel {
-                let refl = reflect(ud, hit.n);
+                let refl = reflect(ud, petal_n);
                 let rough_refl = refl + 0.2 * rand_unit_vec(seed);
-                if dot(rough_refl, hit.n) <= 0.0 { break; }
-                rd2 = normalize(rough_refl); thr = thr * base_color; ro2 = p + hit.n * 0.002; continue;
+                if dot(rough_refl, petal_n) <= 0.0 { break; }
+                rd2 = normalize(rough_refl); thr = thr * base_color; ro2 = p + petal_n * 0.002; continue;
             }
 
             let sigma_a = vec3<f32>(0.005, 0.07, 0.012);
@@ -644,13 +640,7 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             let sigma_t = sigma_s + sigma_a;
             let albedo_s = sigma_s / sigma_t;
             let sigma_t_avg = (sigma_t.x+sigma_t.y+sigma_t.z)/3.0;
-            // ── Petal 3D: UV-driven thickness + pillow normal ──
-            let uv_center = vec2<f32>(0.5);
-            let uv_dist = length(hit.uv - uv_center);
-            let alpha_edge = 1.0 - smoothstep(0.0, 0.45, uv_dist); // 0 at edge, 1 at center
-            let thickness = mix(0.005, 0.028, alpha_edge); // edge thin, center thick
-            let pillow_offset = (hit.uv - uv_center) * 0.06; // pillow normal
-            let inward_n = normalize(-hit.n + vec3<f32>(pillow_offset.x, pillow_offset.y, 0.0));
+            let inward_n = -petal_n;
             let g_hg = 0.7;
 
             var sss_thr = vec3<f32>(1.0);
@@ -784,6 +774,14 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             if dot(rough_refl, use_n) > 0.001 {
                 sdir = normalize(mix(sdir, rough_refl, 0.06));
                 thr = thr * mix(surface_color, vec3<f32>(1.0), 0.06);
+            }
+        }
+        if mt == 6u {
+            let refl = reflect(normalize(rd2), use_n);
+            let rough_refl = normalize(refl + use_fuzz * rand_unit_vec(seed));
+            if dot(rough_refl, use_n) > 0.001 {
+                sdir = normalize(mix(sdir, rough_refl, 0.04));
+                thr = thr * mix(surface_color, vec3<f32>(1.0), 0.04);
             }
         }
         if dot(sdir, use_n) < 0.001 { sdir = select(-use_n, use_n, dot(sdir, use_n) > 0.0); }
