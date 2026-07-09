@@ -4,6 +4,9 @@
 # Whitelist: only allow these paths
 !doc/
 !src/
+!src-gpu/
+!src-gpu/src/
+!src-gpu/**
 !LICENSE
 !Cargo.toml
 !hint.txt
