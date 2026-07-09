@@ -45,8 +45,16 @@ struct Material {
     tex_id: u32,
 }
 
+struct GpuParticle {
+    pos_t0: vec4<f32>,
+    pos_t1: vec4<f32>,
+    radius: f32,
+    material_id: u32,
+    _pad: vec2<u32>,
+}
+
 struct GpuTexture {
-    data_offset: u32, width: u32, height: u32, _pt0: u32,
+    data_offset: u32, width: u32, height: u32, channels: u32,
 }
 
 struct Uniforms {
@@ -58,6 +66,8 @@ struct Uniforms {
     triangle_count: u32,
     bvh_node_count: u32,
     light_count: u32,
+    particle_count: u32,
+    particle_offset: u32,
     background: vec4<f32>,
     tex_count: u32,
     batch_offset: u32,
@@ -66,7 +76,7 @@ struct Uniforms {
     tile_start_y: u32,
     tile_end_x: u32,
     tile_end_y: u32,
-    _pad: u32,
+    sun_dir: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read_write> output: array<vec4<f32>>;
@@ -79,10 +89,21 @@ struct Uniforms {
 @group(0) @binding(7) var<storage, read> lights: array<u32>;
 @group(0) @binding(8) var<storage, read> textures: array<GpuTexture>;
 @group(0) @binding(9) var<storage, read> tex_data: array<f32>;
+@group(0) @binding(10) var<storage, read> particles: array<GpuParticle>;
+
+fn hash_u32(x: u32) -> u32 {
+    var a = x;
+    a = (a ^ 61u) ^ (a >> 16u);
+    a = a + (a << 3u);
+    a = a ^ (a >> 4u);
+    a = a * 0x27d4eb2du;
+    a = a ^ (a >> 15u);
+    return a;
+}
 
 fn rand(seed: ptr<function, u32>) -> f32 {
     *seed = *seed * 1664525u + 1013904223u;
-    return f32(*seed & 0x00FFFFFFu) / f32(0x01000000u);
+    return f32(*seed >> 8u) / 16777216.0;
 }
 
 fn rand_in_disk(seed: ptr<function, u32>) -> vec2<f32> {
@@ -103,7 +124,6 @@ fn rand_unit_vec(seed: ptr<function, u32>) -> vec3<f32> {
             return vec3<f32>(x*inv, y*inv, z*inv);
         }
     }
-    // Fallback: use seed-driven direction instead of hardcoded (0,1,0)
     let a = rand(seed) * 6.28318530718;
     let b = rand(seed) * 2.0 - 1.0;
     let sb = sqrt(1.0 - b*b);
@@ -125,9 +145,21 @@ fn refract2(uv: vec3<f32>, n: vec3<f32>, eta: f32) -> vec3<f32> {
     return rp - sqrt(abs(1.0 - dot(rp, rp))) * n;
 }
 
+fn water_wave_normal(p: vec3<f32>, base_n: vec3<f32>) -> vec3<f32> {
+    let up = vec3<f32>(0.0, 1.0, 0.0);
+    let av = select(up, vec3<f32>(1.0, 0.0, 0.0), abs(base_n.y) > 0.999);
+    let t = normalize(cross(av, base_n));
+    let b = cross(base_n, t);
+    let coord = p * 0.4;
+    let w1 = sin(coord.x*3.7 + coord.z*2.3) * cos(coord.z*4.1 - coord.x*1.7) * 0.022;
+    let w2 = sin(coord.x*7.1 + coord.z*5.3 + 0.7) * cos(coord.z*8.2 - coord.x*3.9 + 1.1) * 0.009;
+    let w3 = sin(coord.x*13.4 + coord.z*9.7 + 1.3) * cos(coord.z*11.8 - coord.x*7.2 + 0.4) * 0.003;
+    let perturb = t * (w1 + w2 + w3) + b * (w1*0.7 + w2*0.8 + w3*0.9);
+    return normalize(base_n + perturb);
+}
+
 fn onb_local(n: vec3<f32>, a: vec3<f32>) -> vec3<f32> {
     let w = normalize(n);
-    // abs(w.x) > 0.9 → normal near X → use Y as auxiliary (NOT X!)
     let av = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(w.x) > 0.9);
     let v = normalize(cross(w, av));
     let u = cross(w, v);
@@ -137,6 +169,10 @@ fn onb_local(n: vec3<f32>, a: vec3<f32>) -> vec3<f32> {
 fn aabb_hit(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, bmin: vec3<f32>, bmax: vec3<f32>) -> bool {
     var tmn = tmin; var tmx = tmax;
     for (var a: u32 = 0u; a < 3u; a++) {
+        if abs(rd[a]) < 1e-12 {
+            if ro[a] < bmin[a] || ro[a] > bmax[a] { return false; }
+            continue;
+        }
         let inv = 1.0 / rd[a];
         var t0 = (bmin[a] - ro[a]) * inv;
         var t1 = (bmax[a] - ro[a]) * inv;
@@ -160,6 +196,22 @@ fn hit_sphere(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, s: Sphere) -> 
     return root;
 }
 
+fn hit_particle(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, p_idx: u32, seed: ptr<function, u32>) -> f32 {
+    let p = particles[p_idx - u.particle_offset];
+    let t_rand = rand(seed);
+    let center = mix(p.pos_t0.xyz, p.pos_t1.xyz, t_rand);
+    let oc = ro - center;
+    let a = dot(rd, rd);
+    let hb = dot(oc, rd);
+    let c = dot(oc, oc) - p.radius * p.radius;
+    let d = hb * hb - a * c;
+    if d < 0.0 { return tmax; }
+    let sd = sqrt(d);
+    var root = (-hb - sd) / a;
+    if root < tmin || root > tmax { root = (-hb + sd) / a; if root < tmin || root > tmax { return tmax; } }
+    return root;
+}
+
 fn hit_tri(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, tri: Triangle,
             uv_out: ptr<function, vec2<f32>>, norm_out: ptr<function, vec3<f32>>) -> f32 {
     let e1 = tri.v1.xyz - tri.v0.xyz;
@@ -174,7 +226,6 @@ fn hit_tri(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, tri: Triangle,
     let q = cross(s, e1);
     let bv = f * dot(rd, q);
     if bv < -1e-6 || bu + bv > 1.0 + 1e-6 { return tmax; }
-    // Use raw barycentrics (already validated by edge checks above)
     let bw = 1.0 - bu - bv;
     *uv_out = tri.uv0 * bw + tri.uv1 * bu + tri.uv2 * bv;
     *norm_out = normalize(tri.n0.xyz * bw + tri.n1.xyz * bu + tri.n2.xyz * bv);
@@ -185,39 +236,51 @@ fn hit_tri(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, tri: Triangle,
 
 struct Hit { t: f32, n: vec3<f32>, ff: bool, mid: u32, uv: vec2<f32>, }
 
-fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32) -> Hit {
+fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, seed: ptr<function, u32>) -> Hit {
     var result: Hit;
     result.t = tmax; result.mid = 0u; result.n = vec3<f32>(0.0); result.ff = false;
 
     if u.bvh_node_count > 0u {
-        var stack: array<u32, 64>;
+        var stack: array<u32, 2048>;
         var sp: u32 = 0u;
         stack[sp] = 0u; sp = 1u;
-        for (var iter: u32 = 0u; iter < 50000u && sp > 0u; iter++) {
+        for (var iter: u32 = 0u; iter < 2000000u && sp > 0u; iter++) {
             sp = sp - 1u;
             let ni = stack[sp];
             let node = bvh_nodes[ni];
             if !aabb_hit(ro, rd, tmin, result.t, node.bbox_min, node.bbox_max) { continue; }
             if (node.primitive_count & 0x80000000u) != 0u {
-                // Internal node: left_or_first = left child index, primitive_count low bits = right child index
                 let left = node.left_or_first;
                 let right = node.primitive_count & 0x7FFFFFFFu;
                 stack[sp] = right; sp = sp + 1u;
                 stack[sp] = left; sp = sp + 1u;
             } else {
-                // Leaf node: left_or_first has primitive index, primitive_count = count
                 let first = node.left_or_first;
                 let count = node.primitive_count;
                 let is_tri = (first >> 31u) != 0u;
                 let idx = first & 0x7FFFFFFFu;
                 if !is_tri {
                     for (var i: u32 = 0u; i < count; i++) {
-                        let s = spheres[idx + i];
-                        let t = hit_sphere(ro, rd, tmin, result.t, s);
+                        let si = idx + i;
+                        let s = spheres[si];
+                        var t: f32;
+                        var is_part = false;
+                        if si >= u.particle_offset && si < u.particle_offset + u.particle_count {
+                            t = hit_particle(ro, rd, tmin, result.t, si, seed);
+                            is_part = true;
+                        } else {
+                            t = hit_sphere(ro, rd, tmin, result.t, s);
+                        }
                         if t < result.t {
                             result.t = t; result.mid = s.material_id;
                             let p = ro + t * rd;
-                            let on = (p - s.center.xyz) / s.radius;
+                            var center = s.center.xyz;
+                            if is_part {
+                                let part = particles[si - u.particle_offset];
+                                let tr = rand(seed);
+                                center = mix(part.pos_t0.xyz, part.pos_t1.xyz, tr);
+                            }
+                            let on = (p - center) / s.radius;
                             result.ff = dot(rd, on) < 0.0;
                             result.n = select(-on, on, result.ff);
                         }
@@ -229,6 +292,8 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32) -> Hit {
                         let tri = triangles[idx + i];
                         let t = hit_tri(ro, rd, tmin, result.t, tri, &uv, &norm);
                         if t < result.t {
+                            let mat = materials[tri.material_id];
+                            if sample_texture_alpha(mat.tex_id, uv) < 0.5 { continue; }
                             result.t = t; result.mid = tri.material_id;
                             result.ff = dot(rd, norm) < 0.0;
                             result.n = select(-norm, norm, result.ff);
@@ -241,11 +306,24 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32) -> Hit {
     } else {
         for (var i: u32 = 0u; i < u.sphere_count; i++) {
             let s = spheres[i];
-            let t = hit_sphere(ro, rd, tmin, result.t, s);
+            var t: f32;
+            var is_part = false;
+            if i >= u.particle_offset && i < u.particle_offset + u.particle_count {
+                t = hit_particle(ro, rd, tmin, result.t, i, seed);
+                is_part = true;
+            } else {
+                t = hit_sphere(ro, rd, tmin, result.t, s);
+            }
             if t < result.t {
                 result.t = t; result.mid = s.material_id;
                 let p = ro + t * rd;
-                let on = (p - s.center.xyz) / s.radius;
+                var center = s.center.xyz;
+                if is_part {
+                    let part = particles[i - u.particle_offset];
+                    let tr = rand(seed);
+                    center = mix(part.pos_t0.xyz, part.pos_t1.xyz, tr);
+                }
+                let on = (p - center) / s.radius;
                 result.ff = dot(rd, on) < 0.0;
                 result.n = select(-on, on, result.ff);
                 result.uv = vec2<f32>(0.0);
@@ -257,6 +335,8 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32) -> Hit {
             let tri = triangles[i];
             let t = hit_tri(ro, rd, tmin, result.t, tri, &uv2, &norm2);
             if t < result.t {
+                let mat = materials[tri.material_id];
+                if sample_texture_alpha(mat.tex_id, uv2) < 0.5 { continue; }
                 result.t = t; result.mid = tri.material_id;
                 result.ff = dot(rd, norm2) < 0.0;
                 result.n = select(-norm2, norm2, result.ff);
@@ -272,11 +352,11 @@ fn sample_texture(tex_id: u32, uv_input: vec2<f32>) -> vec3<f32> {
     let tex = textures[tex_id - 1u];
     let w = tex.width;
     let h = tex.height;
+    let ch = tex.channels;
     var uu = uv_input.x - floor(uv_input.x);
     var vv = uv_input.y - floor(uv_input.y);
     var px = uu * f32(w) - 0.5;
     var py = vv * f32(h) - 0.5;
-    // Wrap negative values to avoid large-u32 precision loss
     if px < 0.0 { px = px + f32(w); }
     if py < 0.0 { py = py + f32(h); }
     let xi = u32(px);
@@ -288,11 +368,11 @@ fn sample_texture(tex_id: u32, uv_input: vec2<f32>) -> vec3<f32> {
     let y0 = yi % h;
     let y1 = (y0 + 1u) % h;
     let offset = tex.data_offset;
-    let row_stride = w * 3u;
-    let i00 = offset + y0 * row_stride + x0 * 3u;
-    let i10 = offset + y0 * row_stride + x1 * 3u;
-    let i01 = offset + y1 * row_stride + x0 * 3u;
-    let i11 = offset + y1 * row_stride + x1 * 3u;
+    let row_stride = w * ch;
+    let i00 = offset + y0 * row_stride + x0 * ch;
+    let i10 = offset + y0 * row_stride + x1 * ch;
+    let i01 = offset + y1 * row_stride + x0 * ch;
+    let i11 = offset + y1 * row_stride + x1 * ch;
     let c00 = vec3<f32>(tex_data[i00], tex_data[i00+1u], tex_data[i00+2u]);
     let c10 = vec3<f32>(tex_data[i10], tex_data[i10+1u], tex_data[i10+2u]);
     let c01 = vec3<f32>(tex_data[i01], tex_data[i01+1u], tex_data[i01+2u]);
@@ -300,35 +380,208 @@ fn sample_texture(tex_id: u32, uv_input: vec2<f32>) -> vec3<f32> {
     return mix(mix(c00, c10, fx), mix(c01, c11, fx), fy);
 }
 
+fn sample_texture_alpha(tex_id: u32, uv_input: vec2<f32>) -> f32 {
+    if tex_id == 0u { return 1.0; }
+    let tex = textures[tex_id - 1u];
+    if tex.channels < 4u { return 1.0; }
+    let w = tex.width;
+    let h = tex.height;
+    var uu = uv_input.x - floor(uv_input.x);
+    var vv = uv_input.y - floor(uv_input.y);
+    if uu < 0.0 { uu = uu + 1.0; }
+    if vv < 0.0 { vv = vv + 1.0; }
+    let xi = u32(uu * f32(w)) % w;
+    let yi = u32(vv * f32(h)) % h;
+    let idx = tex.data_offset + yi * w * 4u + xi * 4u + 3u;
+    return tex_data[idx];
+}
+
+fn hash3(p: vec3<f32>) -> f32 {
+    let h = clamp(dot(p, vec3<f32>(127.1, 311.7, 74.7)), -1e6, 1e6);
+    let s = sin(h) * 43758.5453;
+    return select(0.5, fract(s), abs(s) < 1e10);
+}
+
+fn value_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(
+        mix(mix(hash3(i), hash3(i+vec3<f32>(1,0,0)), u.x),
+            mix(hash3(i+vec3<f32>(0,1,0)), hash3(i+vec3<f32>(1,1,0)), u.x), u.y),
+        mix(mix(hash3(i+vec3<f32>(0,0,1)), hash3(i+vec3<f32>(1,0,1)), u.x),
+            mix(hash3(i+vec3<f32>(0,1,1)), hash3(i+vec3<f32>(1,1,1)), u.x), u.y),
+        u.z);
+}
+
+fn fbm(p: vec3<f32>, octaves: u32) -> f32 {
+    var val = 0.0; var amp = 0.5; var freq = 1.0; var acc = 0.0;
+    for (var i = 0u; i < octaves; i++) {
+        val += amp * value_noise(p * freq);
+        acc += amp; freq *= 2.0; amp *= 0.5;
+    }
+    return val / acc;
+}
+
+fn bump_normal(p: vec3<f32>, n: vec3<f32>, field_val: f32, eps: f32, strength: f32) -> vec3<f32> {
+    let dx = field_val - fbm(p - vec3<f32>(eps,0,0), 4u);
+    let dy = field_val - fbm(p - vec3<f32>(0,eps,0), 4u);
+    let dz = field_val - fbm(p - vec3<f32>(0,0,eps), 4u);
+    let av = select(vec3<f32>(0,1,0), vec3<f32>(1,0,0), abs(n.y) > 0.999);
+    let t = normalize(cross(av, n));
+    let b = cross(n, t);
+    let grad = vec3<f32>(dx, dy, dz);
+    return normalize(n - (t*dot(grad,t) + b*dot(grad,b)) * (strength / eps));
+}
+
+fn stone_field(p: vec3<f32>) -> f32 {
+    let coarse = fbm(p * 3.0, 3u);
+    let fine   = fbm(p * 11.0 + vec3<f32>(1.7), 3u);
+    let cracks = fbm(p * 25.0 + vec3<f32>(3.1), 2u);
+    return coarse * 0.5 + fine * 0.3 + cracks * 0.2;
+}
+
+fn wood_field(p: vec3<f32>) -> f32 {
+    let w = vec3<f32>(
+        fbm(p * 2.0 + vec3<f32>(1.2,0,0), 2u),
+        fbm(p * 2.0 + vec3<f32>(3.4,0,0), 2u) * 0.1,
+        fbm(p * 2.0 + vec3<f32>(5.6,0,0), 2u));
+    let wp = p + w * 0.12;
+    let fiber = fbm(wp * vec3<f32>(16.0, 0.15, 16.0), 3u);
+    let r = length(wp.xz);
+    let ring = sin(r * 25.0 + fbm(wp * 2.0, 2u) * 4.0) * 0.5 + 0.5;
+    return mix(fiber, ring, 0.35);
+}
+
+fn wood_roughness(p: vec3<f32>) -> f32 { return mix(0.4, 0.85, wood_field(p)); }
+
+fn sample_hg(wo: vec3<f32>, g: f32, seed: ptr<function, u32>) -> vec3<f32> {
+    let xi = rand(seed);
+    var cos_theta: f32;
+    if abs(g) < 0.001 {
+        cos_theta = 1.0 - 2.0 * xi;
+    } else {
+        let g2 = g * g;
+        let term = (1.0 - g2) / (1.0 - g + 2.0 * g * xi);
+        cos_theta = (1.0 + g2 - term * term) / (2.0 * max(g, 0.001));
+    }
+    let sin_theta = sqrt(max(1.0 - cos_theta*cos_theta, 0.0));
+    let phi = 6.28318530718 * rand(seed);
+    let av = select(vec3<f32>(0,1,0), vec3<f32>(1,0,0), abs(wo.y) > 0.999);
+    let t = normalize(cross(av, wo));
+    let b = cross(wo, t);
+    return wo * cos_theta + t * sin_theta * cos(phi) + b * sin_theta * sin(phi);
+}
+
+fn sky_color(rd: vec3<f32>) -> vec3<f32> {
+    let sun_dir = normalize(u.sun_dir.xyz);
+    let y = rd.y;
+
+    let zenith   = vec3<f32>(0.015, 0.025, 0.12);
+    let mid_sky  = vec3<f32>(0.55, 0.12, 0.28);
+    let horizon  = vec3<f32>(0.98, 0.42, 0.12);
+    let r_dark   = vec3<f32>(0.12, 0.04, 0.03);
+
+    var sky_base: vec3<f32>;
+    if y > -0.15 {
+        let t = (y + 0.15) / 1.15;
+        let mid_stop = 0.38;
+        if t < mid_stop {
+            let local_t = smoothstep(0.0, mid_stop, t);
+            sky_base = mix(horizon, mid_sky, local_t);
+        } else {
+            let local_t = smoothstep(mid_stop, 1.0, t);
+            sky_base = mix(mid_sky, zenith, local_t);
+        }
+    } else {
+        let t_down = smoothstep(0.0, 1.0, clamp((-y - 0.15) * 2.5, 0.0, 1.0));
+        sky_base = mix(horizon, r_dark, t_down);
+    }
+
+    let sun_cos = max(dot(rd, sun_dir), 0.0);
+    let glow_wide = pow(sun_cos, 6.0) * vec3<f32>(1.0, 0.3, 0.05) * 2.0;
+    let sun_disk  = pow(sun_cos, 400.0) * vec3<f32>(1.0, 0.85, 0.4) * 15.0;
+
+    return sky_base + glow_wide + sun_disk;
+}
+
 fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32> {
     var col = vec3<f32>(0.0);
     var thr = vec3<f32>(1.0);
     var ro2 = ro; var rd2 = rd;
+    var in_water = false;
 
     for (var d: u32 = 0u; d < u.max_depth; d++) {
-        let hit = hit_world(ro2, rd2, 0.001, 1e30);
+        let hit = hit_world(ro2, rd2, 0.001, 1e30, seed);
+
+        if in_water {
+            let sigma = vec3<f32>(0.35, 0.06, 0.025);
+            if hit.t < 1e29 {
+                thr = thr * exp(-sigma * min(hit.t, 20.0));
+            } else {
+                col = col + thr * vec3<f32>(0.02, 0.06, 0.10);
+                break;
+            }
+        }
+        in_water = false;
+
         if hit.t >= 1e29 {
-            let tb = 0.5 * (normalize(rd2).y + 1.0);
-            col = col + thr * mix(vec3<f32>(0.5,0.7,0.9), vec3<f32>(0.95,0.95,1.0), tb);
+            col = col + thr * sky_color(normalize(rd2));
             break;
         }
         let mat = materials[hit.mid];
         let p = ro2 + hit.t * rd2;
         let mt = mat.material_type;
-        if mt == 3u { col = col + thr * mat.albedo.xyz; break; }
+
+        var use_n = hit.n;
+        var use_fuzz = mat.fuzz;
+        if mt == 5u {
+            let fv = stone_field(p);
+            use_n = bump_normal(p, hit.n, fv, 0.010, 0.06);
+            use_fuzz = mix(0.4, 0.75, fv);
+        }
+        if mt == 6u {
+            let wv = wood_field(p);
+            use_n = bump_normal(p, hit.n, wv, 0.005, 0.03);
+            use_fuzz = 0.30;
+        }
+
+        if mt == 3u {
+            if d == 0u {
+                var emit_color = mat.albedo.xyz;
+                if dot(normalize(rd2), normalize(u.sun_dir.xyz)) > 0.95 {
+                    emit_color = emit_color * vec3<f32>(1.0, 0.65, 0.22);
+                }
+                col = col + thr * emit_color;
+            }
+            break;
+        }
         if mt == 2u {
+            let is_water = mat.ref_idx > 1.3 && mat.ref_idx < 1.34;
+            var use_n2 = hit.n;
+            if is_water {
+                use_n2 = water_wave_normal(p, hit.n);
+            }
+
             let tex_color = sample_texture(mat.tex_id, hit.uv);
             let surface_color = mat.albedo.xyz * tex_color;
             var eta = 1.0 / mat.ref_idx; if !hit.ff { eta = mat.ref_idx; }
             let ud = normalize(rd2);
-            let ct = min(dot(-ud, hit.n), 1.0);
+            let ct = min(dot(-ud, use_n2), 1.0);
             let st = sqrt(1.0 - ct * ct);
             var dir: vec3<f32>;
-            if eta * st > 1.0 { dir = reflect(ud, hit.n); }
+            var did_reflect = false;
+            if eta * st > 1.0 { dir = reflect(ud, use_n2); did_reflect = true; }
             else {
                 let r0 = (1.0-eta)/(1.0+eta); let r0s = r0 * r0;
-                if r0s + (1.0-r0s) * pow(1.0-ct, 5.0) > rand(seed) { dir = reflect(ud, hit.n); }
-                else { dir = refract2(ud, hit.n, eta); }
+                let fresnel = r0s + (1.0-r0s) * pow(1.0-ct, 5.0);
+                if fresnel > rand(seed) { dir = reflect(ud, use_n2); did_reflect = true; }
+                else { dir = refract2(ud, use_n2, eta); }
+            }
+            if is_water {
+                if (!did_reflect && hit.ff) || (did_reflect && !hit.ff) {
+                    in_water = true;
+                }
             }
             rd2 = dir; ro2 = p + dir * 0.001;
             thr = thr * mix(vec3<f32>(1.0), surface_color, mat.fuzz);
@@ -343,7 +596,105 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             if dot(sdir, hit.n) <= 0.0 { break; }
             rd2 = sdir; thr = thr * surface_color; ro2 = p + hit.n * 0.002; continue;
         }
-        // ── Diffuse (mt == 0u): standard path tracing loop ──
+        if mt == 4u {
+            let tex_color = sample_texture(mat.tex_id, hit.uv);
+            let base_color = mat.albedo.xyz * tex_color;
+            let coat_rough = max(mat.fuzz, 0.005);
+            let ud = normalize(rd2);
+            let ct = abs(dot(ud, hit.n));
+            let r0 = (mat.ref_idx - 1.0) / (mat.ref_idx + 1.0);
+            let r02_phys = r0 * r0;
+            let r02 = r02_phys * 2.5;
+            let fresnel = r02 + (1.0 - r02) * pow(1.0 - ct, 5.0);
+            if rand(seed) < fresnel {
+                let refl = reflect(ud, hit.n);
+                let sdir = refl + coat_rough * rand_unit_vec(seed);
+                if dot(sdir, hit.n) <= 0.0 { break; }
+                rd2 = sdir; thr = thr * mix(vec3<f32>(1.0), base_color, 0.55); ro2 = p + hit.n * 0.002; continue;
+            }
+            thr = thr * 0.75;
+        }
+        if mt == 7u {
+            if rand(seed) < 0.15 {
+                let ud2 = normalize(rd2);
+                let refl = reflect(ud2, hit.n);
+                let sheen_dir = normalize(refl + 0.65 * rand_unit_vec(seed));
+                if dot(sheen_dir, hit.n) > 0.001 {
+                    rd2 = sheen_dir; ro2 = p + hit.n * 0.002; continue;
+                }
+            }
+
+            let tex_color = sample_texture(mat.tex_id, hit.uv);
+            let base_color = mat.albedo.xyz * tex_color;
+            let ior = 1.4;
+            let ud = normalize(rd2);
+            let ct_enter = abs(dot(ud, hit.n));
+            let r0 = (ior-1.0)/(ior+1.0); let r02 = r0*r0;
+            let fresnel = r02 + (1.0-r02)*pow(1.0-ct_enter, 5.0);
+
+            if rand(seed) < fresnel {
+                let refl = reflect(ud, hit.n);
+                let rough_refl = refl + 0.2 * rand_unit_vec(seed);
+                if dot(rough_refl, hit.n) <= 0.0 { break; }
+                rd2 = normalize(rough_refl); thr = thr * base_color; ro2 = p + hit.n * 0.002; continue;
+            }
+
+            let sigma_a = vec3<f32>(0.005, 0.07, 0.012);
+            let sigma_s = 28.0;
+            let sigma_t = sigma_s + sigma_a;
+            let albedo_s = sigma_s / sigma_t;
+            let sigma_t_avg = (sigma_t.x+sigma_t.y+sigma_t.z)/3.0;
+            // ── Petal 3D: UV-driven thickness + pillow normal ──
+            let uv_center = vec2<f32>(0.5);
+            let uv_dist = length(hit.uv - uv_center);
+            let alpha_edge = 1.0 - smoothstep(0.0, 0.45, uv_dist); // 0 at edge, 1 at center
+            let thickness = mix(0.005, 0.028, alpha_edge); // edge thin, center thick
+            let pillow_offset = (hit.uv - uv_center) * 0.06; // pillow normal
+            let inward_n = normalize(-hit.n + vec3<f32>(pillow_offset.x, pillow_offset.y, 0.0));
+            let g_hg = 0.7;
+
+            var sss_thr = vec3<f32>(1.0);
+            var sss_pos = p;
+            var sss_dir = rd2;
+            var escaped = false;
+            var escaped_back = false;
+
+            for (var sb: u32 = 0u; sb < 20u; sb++) {
+                let d_free = -log(max(rand(seed), 0.0001)) / sigma_t_avg;
+                sss_pos = sss_pos + d_free * sss_dir;
+                let depth = dot(sss_pos - p, inward_n);
+
+                if depth < 0.0 {
+                    sss_pos = sss_pos - depth * inward_n;
+                    escaped = true; escaped_back = false; break;
+                }
+                if depth > thickness {
+                    sss_pos = sss_pos - (depth - thickness) * inward_n;
+                    escaped = true; escaped_back = true; break;
+                }
+
+                sss_thr *= exp(-sigma_a * d_free) * albedo_s;
+
+                let mp = max(sss_thr.x, max(sss_thr.y, sss_thr.z));
+                if mp < 0.05 || rand(seed) > mp { break; }
+                sss_thr /= mp;
+
+                sss_dir = sample_hg(sss_dir, g_hg, seed);
+            }
+
+            if escaped {
+                let exit_n = select(hit.n, -hit.n, escaped_back);
+                ro2 = sss_pos + exit_n * 0.001;
+                rd2 = normalize(sss_dir);
+                thr = thr * sss_thr * base_color;
+                if dot(rd2, exit_n) < 0.001 { rd2 = reflect(rd2, exit_n); }
+            } else {
+                col = col + thr * sss_thr * base_color * 0.1;
+                break;
+            }
+            continue;
+        }
+        // ── Diffuse (mt == 0u or mt == 4u fallthrough) ──
         let tex_color = sample_texture(mat.tex_id, hit.uv);
         let surface_color = mat.albedo.xyz * tex_color;
 
@@ -359,26 +710,46 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             let dist = sqrt(dist_sq);
             let wi = to_light / dist;
             let cos_emitter = max(abs(dot(rnd_pt, -wi)), 0.001);
-            let dist_to_center = length(ls.center.xyz - p);
-            let tmax_shadow = max(dist_to_center - ls.radius - 0.001, 0.001);
-            let lhit = hit_world(p + hit.n * 0.01, wi, 0.001, tmax_shadow);
-            if lhit.t >= tmax_shadow - 0.001 {
-                let cos_recv = max(dot(hit.n, wi), 0.0);
+            let cos_raw = dot(use_n, wi);
+            let petal_t = select(mat.fuzz, 0.0, mt == 5u || mt == 6u);
+            var shadow_ro2 = p + use_n * 0.001;
+            if cos_raw < 0.0 && petal_t > 0.0 {
+                shadow_ro2 = p - use_n * 0.001;
+            }
+            let to_light_vec = light_pt - shadow_ro2;
+            let dist_to_light = length(to_light_vec);
+            let wi2 = to_light_vec / dist_to_light;
+            let lhit = hit_world(shadow_ro2, wi2, 0.001, dist_to_light - 0.001, seed);
+            if lhit.t >= dist_to_light - 0.002 {
+                var cos_recv = max(cos_raw, 0.0);
+                if cos_raw < 0.0 && petal_t > 0.0 {
+                    cos_recv = abs(cos_raw) * petal_t;
+                }
                 let area = 4.0 * 3.14159265359 * ls.radius * ls.radius;
-                let light_pdf = (dist_sq / (cos_emitter * area)) / f32(u.light_count);
-                let bsdf_pdf = cos_recv / 3.14159265359;
-                let mis_w = light_pdf / (light_pdf + bsdf_pdf); // balance heuristic
+                let light_pdf = (dist_to_light * dist_to_light / (cos_emitter * area)) / f32(u.light_count);
+                let bsdf_pdf = max(cos_recv, 0.001) / 3.14159265359;
+                let mis_w = light_pdf / (light_pdf + bsdf_pdf);
                 if light_pdf > 0.0 {
-                    col = col + thr * surface_color * lmat.albedo.xyz * cos_recv
+                    var sun_light_color = lmat.albedo.xyz;
+                    if dot(wi2, normalize(u.sun_dir.xyz)) > 0.95 {
+                        sun_light_color = sun_light_color * vec3<f32>(1.0, 0.65, 0.22);
+                    }
+                    col = col + thr * surface_color * sun_light_color * cos_recv
                         / (3.14159265359 * light_pdf) * mis_w;
                 }
             }
         }
 
-        // Step B: MixturePdf scatter — 50% light-guided, 50% cosine (matching CPU)
+        // Step B: MixturePdf scatter
+        let petal_t2 = select(mat.fuzz, 0.0, mt == 5u || mt == 6u);
+        var scatter_n = use_n;
+        var transmission_color = vec3<f32>(1.0);
+        if petal_t2 > 0.0 && rand(seed) < petal_t2 {
+            scatter_n = -use_n;
+            transmission_color = vec3<f32>(1.0, 0.8, 0.83);
+        }
         var sdir: vec3<f32>;
         if u.light_count > 0u && rand(seed) < 0.5 {
-            // HittablePdf: sample toward a random light
             let li2 = u32(rand(seed) * f32(u.light_count)) % u.light_count;
             let ls2 = spheres[lights[li2]];
             let rp = rand_unit_vec(seed);
@@ -386,12 +757,12 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
             let tl = lp2 - p;
             let dsq = dot(tl, tl);
             if dsq < 0.0001 {
-                sdir = onb_local(hit.n, rand_cosine_dir(seed));
+                sdir = onb_local(use_n, rand_cosine_dir(seed));
                 thr = thr * surface_color;
             } else {
                 let d = sqrt(dsq);
                 sdir = tl / d;
-                let cr2 = max(dot(hit.n, sdir), 0.001);
+                let cr2 = max(dot(use_n, sdir), 0.001);
                 let ce2 = max(abs(dot(rp, -sdir)), 0.001);
                 let area2 = 4.0 * 3.14159265359 * ls2.radius * ls2.radius;
                 let light_pdf2 = (dsq / (ce2 * area2)) / f32(u.light_count);
@@ -400,12 +771,25 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32
                 thr = thr * surface_color * cr2 / (3.14159265359 * mix_pdf2);
             }
         } else {
-            sdir = onb_local(hit.n, rand_cosine_dir(seed));
+            sdir = onb_local(use_n, rand_cosine_dir(seed));
             thr = thr * surface_color;
         }
-        if dot(sdir, hit.n) < 0.001 { sdir = hit.n; }
+        if petal_t2 > 0.0 && rand(seed) < petal_t2 {
+            sdir = -sdir;
+            thr = thr * transmission_color;
+        }
+        if mt == 5u {
+            let refl = reflect(normalize(rd2), use_n);
+            let rough_refl = normalize(refl + use_fuzz * rand_unit_vec(seed));
+            if dot(rough_refl, use_n) > 0.001 {
+                sdir = normalize(mix(sdir, rough_refl, 0.06));
+                thr = thr * mix(surface_color, vec3<f32>(1.0), 0.06);
+            }
+        }
+        if dot(sdir, use_n) < 0.001 { sdir = select(-use_n, use_n, dot(sdir, use_n) > 0.0); }
         thr = max(thr, vec3<f32>(0.0));
-        rd2 = sdir; ro2 = p + hit.n * 0.01;
+        let offset_sign = select(-1.0, 1.0, dot(sdir, use_n) > 0.0);
+        rd2 = sdir; ro2 = p + use_n * 0.001 * offset_sign;
     }
     return col;
 }
@@ -416,39 +800,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = gid.y + u.tile_start_y;
     if x >= u.tile_end_x || y >= u.tile_end_y { return; }
 
-    // Stratified sampling: divide pixel into grid, one sample per cell
     let grid_dim = u32(floor(sqrt(f32(u.samples_per_pixel))));
-    let grid_count = grid_dim * grid_dim;  // samples covered by stratification
-
-    var seed: u32 = x * 1973u + y * 9277u + 2663u;
-    // Advance seed to match absolute sample index (one sample = 4 LCG advances)
-    for (var i: u32 = 0u; i < u.batch_offset; i++) {
-        seed = seed * 1664525u + 1013904223u;
-        seed = seed * 1664525u + 1013904223u;
-        seed = seed * 1664525u + 1013904223u;
-        seed = seed * 1664525u + 1013904223u;
-    }
+    let grid_count = grid_dim * grid_dim;
 
     var acc = vec3<f32>(0.0);
     for (var bi: u32 = 0u; bi < u.batch_count; bi++) {
-        let abs_s = bi + u.batch_offset;  // absolute sample index (0..samples_per_pixel-1)
+        let abs_s = bi + u.batch_offset;
+        var seed = hash_u32(x + y * u.image_width + abs_s * 1234567u);
 
-        // Advance seed deterministically for this absolute sample
-        seed = seed * 1664525u + 1013904223u;
         let rx = rand(&seed);
-        seed = seed * 1664525u + 1013904223u;
         let ry = rand(&seed);
 
         var du: f32;
         var dv: f32;
         if abs_s < grid_count {
-            // Stratified: grid cell with random jitter inside
             let gx = abs_s % grid_dim;
             let gy = abs_s / grid_dim;
             du = (f32(x) + (f32(gx) + rx) / f32(grid_dim)) / f32(u.image_width - 1u);
             dv = (f32(u.image_height - 1u - y) + (f32(gy) + ry) / f32(grid_dim)) / f32(u.image_height - 1u);
         } else {
-            // Extra samples beyond grid: full-pixel random jitter
             du = (f32(x) + rx) / f32(u.image_width - 1u);
             dv = (f32(u.image_height - 1u - y) + ry) / f32(u.image_height - 1u);
         }
@@ -458,5 +828,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         acc = acc + ray_color(orig, dir, &seed);
     }
     let idx = y * u.image_width + x;
-    output[idx] = output[idx] + vec4<f32>(acc.x, acc.y, acc.z, 0.0); // restore normal
+    output[idx] = output[idx] + vec4<f32>(acc.x, acc.y, acc.z, 0.0);
 }

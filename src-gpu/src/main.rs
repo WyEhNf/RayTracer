@@ -910,7 +910,24 @@ fn create_scene_environment(
         };
         m.tex_id = tid;
         m.material_type = 0;
-        println!("  {} → tex_id {}", name, tid);
+        m.fuzz = 0.0;
+        m.ref_idx = 1.0;
+        match tid {
+            1 | 3 | 7 | 8 | 11 | 34 => { m.material_type = 4; m.ref_idx = 1.5; m.fuzz = 0.35; m.albedo = [0.55, 0.55, 0.55, 0.0]; }
+            5 | 10 | 21..=30 | 38 => { m.material_type = 5; m.fuzz = 0.6; }
+            19 | 20 | 32 => { m.material_type = 6; m.fuzz = 0.5; }
+            14 | 31 | 39 | 40 => { m.material_type = 7; m.fuzz = 0.5; m.albedo = [1.0, 0.75, 0.7, 0.0]; }
+            16 => { m.material_type = 1; m.fuzz = 0.2; }
+            35 => { m.material_type = 1; m.fuzz = 0.3; }
+            17 => { m.material_type = 2; m.ref_idx = 1.45; m.fuzz = 0.0; }
+            33 => { m.material_type = 2; m.ref_idx = 1.333; m.fuzz = 0.15; m.albedo = [0.1, 0.25, 0.4, 0.0]; }
+            _ => {}
+        }
+        let type_name = match m.material_type {
+            1 => "METAL", 2 => "GLASS", 4 => "CLEARCOAT", 5 => "STONE", 6 => "WOOD", 7 => "SSS",
+            _ => if m.fuzz > 0.0 { "TRANSLUCENT" } else { "DIFFUSE" },
+        };
+        println!("  {} → tex_id {} ({})", name, tid, type_name);
     }
 
     // Offset triangle material IDs past the default materials
@@ -1080,9 +1097,9 @@ async fn run() {
 
     // Scene-mode: smaller output for faster iteration
     if render_scene {
-        image_width = 6400;
-        image_height = 6400;
-        samples_per_pixel = 200;
+        image_width = 1200;
+        image_height = 1200;
+        samples_per_pixel = 100;
         max_depth = 50;
     }
 
