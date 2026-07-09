@@ -68,8 +68,6 @@ struct Uniforms {
     light_count: u32,
     particle_count: u32,
     particle_offset: u32,
-    falling_petal_count: u32,   // dynamic falling petals
-    _pad_u: u32,                // align to 16B
     background: vec4<f32>,
     tex_count: u32,
     batch_offset: u32,
@@ -92,7 +90,6 @@ struct Uniforms {
 @group(0) @binding(8) var<storage, read> textures: array<GpuTexture>;
 @group(0) @binding(9) var<storage, read> tex_data: array<f32>;
 @group(0) @binding(10) var<storage, read> particles: array<GpuParticle>;
-@group(0) @binding(11) var<storage, read> falling_petals: array<Triangle>;
 
 fn hash_u32(x: u32) -> u32 {
     var a = x;
@@ -346,18 +343,6 @@ fn hit_world(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32, r_time: f32) ->
                 result.n = select(-norm2, norm2, result.ff);
                 result.uv = uv2;
             }
-        }
-    }
-    // Dynamic falling petals: linear scan (max 64 tris, no BVH needed)
-    for (var pi: u32 = 0u; pi < u.falling_petal_count; pi++) {
-        let tri = falling_petals[pi];
-        var uv: vec2<f32>; var norm: vec3<f32>;
-        let t = hit_tri(ro, rd, tmin, result.t, tri, &uv, &norm);
-        if t < result.t {
-            result.t = t; result.mid = tri.material_id;
-            result.ff = dot(rd, norm) < 0.0;
-            result.n = select(-norm, norm, result.ff);
-            result.uv = uv;
         }
     }
     return result;
