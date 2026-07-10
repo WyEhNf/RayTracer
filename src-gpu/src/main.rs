@@ -78,6 +78,8 @@ struct GpuMaterial {
     ref_idx: f32,
     material_type: u32,
     tex_id: u32,
+    emission_tex_id: u32,
+    _pad_mat: [u32; 3],
 }
 
 #[repr(C)]
@@ -343,6 +345,8 @@ fn parse_mtl(path: &str) -> Vec<(String, GpuMaterial)> {
                             ref_idx: 1.0,
                             material_type: 0,
                             tex_id: 0,
+                            emission_tex_id: 0,
+                            _pad_mat: [0; 3],
                         },
                     ));
                 }
@@ -368,6 +372,8 @@ fn parse_mtl(path: &str) -> Vec<(String, GpuMaterial)> {
                 ref_idx: 1.0,
                 material_type: 0,
                 tex_id: 0,
+                emission_tex_id: 0,
+                _pad_mat: [0; 3],
             },
         ));
     }
@@ -419,7 +425,7 @@ fn load_obj(
                 let parsed = parse_mtl(&mtl_path);
                 println!("MTL {} -> {} materials", mtl_path, parsed.len());
                 for (name, mat) in &parsed {
-                    let id = materials.len() as u32;
+                    let id = default_mat_id + materials.len() as u32;
                     materials.push(*mat);
                     material_names.push(name.clone());
                     mtl_map.insert(name.clone(), id);
@@ -586,7 +592,7 @@ fn load_textures(
 fn assign_tex_id(name: &str, _textures: &[GpuTexture]) -> u32 {
     // Textures loaded in order: 1=肌, 2=面, 3=发, 4=服
     if name.contains("肌") || name.contains("二重") { return 1; }
-    if name.contains("面") { return 2; }
+    if name.contains("面") || name.contains("眉") || name.contains("睫") { return 2; }
     if name.contains("髮") || name.contains("前髮") { return 3; }
     if name.contains("服") || name.contains("裙") || name.contains("新規")
         || name.contains("蝴蝶結") || name.contains("結1") || name.contains("帶")
@@ -736,6 +742,44 @@ fn load_scene_textures(obj_dir: &Path) -> (Vec<GpuTexture>, Vec<f32>) {
         }
     }
 
+    // ── Load emission (_E) textures for materials 12, 20, 36 ──
+    // tex_id will be: 材質12→E at end, 材質20→E at end+1, 材質36→E at end+2
+    let e_materials: [(u32, &str); 3] = [(12, "Tex_0014_E.png"), (20, "Tex_0024_E.png"), (36, "Tex_0016_E.png")];
+    for (mtl_idx, e_filename) in &e_materials {
+        let e_path = tex_dir.join(e_filename);
+        let (ew, eh, e_offset) = if e_path.exists() {
+            let e_img = match image::open(&e_path) {
+                Ok(i) => i.to_rgba8(),
+                Err(_) => {
+                    let off = tex_data.len() as u32;
+                    tex_data.push(0.0); tex_data.push(0.0); tex_data.push(0.0); tex_data.push(0.0);
+                    textures.push(GpuTexture { data_offset: off, width: 1, height: 1, channels: 4 });
+                    continue;
+                }
+            };
+            let (w, h) = (e_img.width(), e_img.height());
+            let off = tex_data.len() as u32;
+            for y in 0..h {
+                for x in 0..w {
+                    let p = e_img.get_pixel(x, y);
+                    tex_data.push(p[0] as f32 / 255.0);
+                    tex_data.push(p[1] as f32 / 255.0);
+                    tex_data.push(p[2] as f32 / 255.0);
+                    tex_data.push(p[3] as f32 / 255.0);
+                }
+            }
+            textures.push(GpuTexture { data_offset: off, width: w, height: h, channels: 4 });
+            println!("  {} (emission for 材質{}) loaded {}x{}", e_filename, mtl_idx, w, h);
+            (w, h, off)
+        } else {
+            let off = tex_data.len() as u32;
+            tex_data.push(0.0); tex_data.push(0.0); tex_data.push(0.0); tex_data.push(0.0);
+            textures.push(GpuTexture { data_offset: off, width: 1, height: 1, channels: 4 });
+            continue;
+        };
+        let _ = (ew, eh, e_offset);
+    }
+
     println!(
         "Loaded {} scene textures ({} floats, {:.1} MB)",
         textures.len(),
@@ -747,11 +791,11 @@ fn load_scene_textures(obj_dir: &Path) -> (Vec<GpuTexture>, Vec<f32>) {
 
 fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Vec<GpuMaterial>, Vec<u32>, Vec<GpuTexture>, Vec<f32>) {
     let mut materials = vec![
-        GpuMaterial { albedo: [0.5,0.5,0.5,0.0], fuzz:0.0, ref_idx:1.0, material_type:0, tex_id:0 },
-        GpuMaterial { albedo: [0.4,0.2,0.1,0.0], fuzz:0.0, ref_idx:1.0, material_type:0, tex_id:0 },
-        GpuMaterial { albedo: [0.7,0.6,0.5,0.0], fuzz:0.0, ref_idx:1.0, material_type:1, tex_id:0 },
-        GpuMaterial { albedo: [1.0,1.0,1.0,0.0], fuzz:0.0, ref_idx:1.5, material_type:2, tex_id:0 },
-        GpuMaterial { albedo: [15.0,15.0,15.0,0.0], fuzz:0.0, ref_idx:1.0, material_type:3, tex_id:0 },
+        GpuMaterial { albedo: [0.5,0.5,0.5,0.0], fuzz:0.0, ref_idx:1.0, material_type:0, tex_id:0, emission_tex_id:0, _pad_mat:[0;3] },
+        GpuMaterial { albedo: [0.4,0.2,0.1,0.0], fuzz:0.0, ref_idx:1.0, material_type:0, tex_id:0, emission_tex_id:0, _pad_mat:[0;3] },
+        GpuMaterial { albedo: [0.7,0.6,0.5,0.0], fuzz:0.0, ref_idx:1.0, material_type:1, tex_id:0, emission_tex_id:0, _pad_mat:[0;3] },
+        GpuMaterial { albedo: [1.0,1.0,1.0,0.0], fuzz:0.0, ref_idx:1.5, material_type:2, tex_id:0, emission_tex_id:0, _pad_mat:[0;3] },
+        GpuMaterial { albedo: [15.0,15.0,15.0,0.0], fuzz:0.0, ref_idx:1.0, material_type:3, tex_id:0, emission_tex_id:0, _pad_mat:[0;3] },
     ];
 
     let default_mat_count = materials.len() as u32;
@@ -822,8 +866,8 @@ fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Ve
                 "神之眼" => { m.material_type = 1; m.fuzz = 0.03; m.albedo = [0.3, 0.65, 0.85, 0.0]; }
                 "配飾" => { m.material_type = 1; m.fuzz = 0.08; }
                 "髮饰" => { m.material_type = 1; m.fuzz = 0.10; }
-                "帶" | "帶內" => { m.material_type = 1; m.fuzz = 0.12; }
-                "服" | "褲" | "新規" => { m.material_type = 1; m.fuzz = 0.08; }
+                "帶" | "帶內" => { m.material_type = 4; m.fuzz = 0.25; m.ref_idx = 1.5; }
+                "服" | "褲" | "新規" => { m.material_type = 4; m.fuzz = 0.20; m.ref_idx = 1.5; }
                 "裙" => { m.material_type = 0; }
 
                 // === Skin: restore texture with proper albedo tint ===
@@ -893,7 +937,7 @@ fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Ve
             let key_light_idx = spheres.len() as u32;
             materials[4] = GpuMaterial {
                 albedo: [30.0, 28.0, 24.0, 0.0], fuzz: 0.0, ref_idx: 1.0,
-                material_type: 3, tex_id: 0,
+                material_type: 3, tex_id: 0, emission_tex_id: 0, _pad_mat: [0; 3],
             };
             spheres.push(GpuSphere {
                 center: [cx + model_size * 1.5, cy + model_size * 0.5, cz - model_size * 1.5, 0.0],
@@ -903,7 +947,7 @@ fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Ve
             let fill_mat_id = materials.len() as u32;
             materials.push(GpuMaterial {
                 albedo: [12.0, 14.0, 20.0, 0.0], fuzz: 0.0, ref_idx: 1.0,
-                material_type: 3, tex_id: 0,
+                material_type: 3, tex_id: 0, emission_tex_id: 0, _pad_mat: [0; 3],
             });
             let fill_light_idx = spheres.len() as u32;
             spheres.push(GpuSphere {
@@ -914,7 +958,7 @@ fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Ve
             let rim_mat_id = materials.len() as u32;
             materials.push(GpuMaterial {
                 albedo: [20.0, 20.0, 25.0, 0.0], fuzz: 0.0, ref_idx: 1.0,
-                material_type: 3, tex_id: 0,
+                material_type: 3, tex_id: 0, emission_tex_id: 0, _pad_mat: [0; 3],
             });
             let rim_light_idx = spheres.len() as u32;
             spheres.push(GpuSphere {
@@ -1040,6 +1084,7 @@ fn generate_petal_particles(
 
 fn create_scene_environment(
     obj_path: &str,
+    sun_yaw_deg: f32,
 ) -> (
     Vec<GpuSphere>,
     Vec<GpuTriangle>,
@@ -1050,11 +1095,11 @@ fn create_scene_environment(
 ) {
     // Base materials — same defaults as the character scene
     let mut materials = vec![
-        GpuMaterial { albedo: [0.5, 0.5, 0.5, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 0, tex_id: 0 }, // 0: ground grey
-        GpuMaterial { albedo: [0.4, 0.2, 0.1, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 0, tex_id: 0 }, // 1: brown diffuse
-        GpuMaterial { albedo: [0.7, 0.6, 0.5, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 1, tex_id: 0 }, // 2: metal
-        GpuMaterial { albedo: [1.0, 1.0, 1.0, 0.0], fuzz: 0.0, ref_idx: 1.5, material_type: 2, tex_id: 0 }, // 3: dielectric
-        GpuMaterial { albedo: [15.0, 15.0, 15.0, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 3, tex_id: 0 }, // 4: light (placeholder, will be overridden)
+        GpuMaterial { albedo: [0.5, 0.5, 0.5, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 0, tex_id: 0, emission_tex_id: 0, _pad_mat: [0;3] }, // 0: ground grey
+        GpuMaterial { albedo: [0.4, 0.2, 0.1, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 0, tex_id: 0, emission_tex_id: 0, _pad_mat: [0;3] }, // 1: brown diffuse
+        GpuMaterial { albedo: [0.7, 0.6, 0.5, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 1, tex_id: 0, emission_tex_id: 0, _pad_mat: [0;3] }, // 2: metal
+        GpuMaterial { albedo: [1.0, 1.0, 1.0, 0.0], fuzz: 0.0, ref_idx: 1.5, material_type: 2, tex_id: 0, emission_tex_id: 0, _pad_mat: [0;3] }, // 3: dielectric
+        GpuMaterial { albedo: [15.0, 15.0, 15.0, 0.0], fuzz: 0.0, ref_idx: 1.0, material_type: 3, tex_id: 0, emission_tex_id: 0, _pad_mat: [0;3] }, // 4: light (placeholder, will be overridden)
     ];
     let default_mat_count = materials.len() as u32;
 
@@ -1088,6 +1133,7 @@ fn create_scene_environment(
 
         match tid {
             // ── Metal/Glossy (type 1) ──
+            8 => { m.material_type = 1; m.fuzz = 0.08; }   // Tex_0010: strong metal
             16 => { m.material_type = 1; m.fuzz = 0.2; }
             35 => { m.material_type = 1; m.fuzz = 0.3; }
 
@@ -1098,15 +1144,34 @@ fn create_scene_environment(
             // ── Petal translucency (type 0 + fuzz) ──
             14 | 31 | 39 | 40 => { m.material_type = 0; m.fuzz = 0.63; m.albedo = [1.0, 0.82, 0.80, 0.0]; }
 
-            // ── Procedural Stone (type 5): bump-mapped rock ──
-            5 | 10 | 21..=30 | 38 => { m.material_type = 5; m.fuzz = 0.6; }
+            // ── Procedural Stone (type 5): bump rock ──
+            5 | 10 | 15 | 21..=30 | 37 | 38 => { m.material_type = 5; m.fuzz = 0.6; }
 
-            // ── Clear Coat (type 4): lacquered wood ──
-            1 | 3 | 7 | 8 | 11 | 34 => { m.material_type = 4; m.ref_idx = 1.5; m.fuzz = 0.70; m.albedo = [0.55, 0.55, 0.55, 0.0]; }
+            // ── Linen (type 8): rough fabric ──
+            4 => { m.material_type = 8; m.fuzz = 0.85; }
 
-            // ── Procedural Wood (type 6) ──
-            19 | 20 | 32 => { m.material_type = 6; m.fuzz = 0.7; }
+            // ── Smooth Slab (type 9): flat stone, no bump ──
+            6 | 9 => { m.material_type = 9; m.fuzz = 0.3; }
 
+            // ── Procedural Wood (type 6): fuzz encodes grain direction ──
+            //   fuzz<0.33→Y(vertical), <0.66→X(horiz), else→Z(horiz)
+            11 => { m.material_type = 6; m.fuzz = 0.0; }   // Tex_0013: dark posts, Y-grain
+            34 => { m.material_type = 6; m.fuzz = 0.0; }   // Tex_0017: Y-grain
+            1 | 2 | 3 | 7 => { m.material_type = 6; m.fuzz = 0.5; }   // X-grain horizontal beams
+            13 => { m.material_type = 6; m.fuzz = 0.5; }   // Tex_0015: X-grain
+            18 => { m.material_type = 6; m.fuzz = 1.0; }   // Tex_0021: Z-grain
+
+            // ── Matte (type 0): pure diffuse ──
+            19 | 20 | 32 => { m.material_type = 0; m.fuzz = 0.0; }
+
+            _ => {}
+        }
+
+        // ── Emission textures (_E) for materials 12, 20, 36 ──
+        match tid {
+            12 => { m.emission_tex_id = 41; }
+            20 => { m.emission_tex_id = 42; }
+            36 => { m.emission_tex_id = 43; }
             _ => {}
         }
 
@@ -1142,12 +1207,30 @@ fn create_scene_environment(
     }
     tex_data_vec.extend_from_slice(&char_tdata);
     for m in char_mats { materials.push(m); }
-    // DEBUG: all character materials = yellow
-    for (i, _name) in char_mat_names.iter().enumerate() {
+    // Assign character material types with offset correction
+    for (i, name) in char_mat_names.iter().enumerate() {
         let mi = char_mat_offset as usize + i;
-        materials[mi].tex_id = 0;
+        let raw_tid = assign_tex_id(name, &char_texs);
+        materials[mi].tex_id = if raw_tid > 0 { raw_tid + char_tex_base } else { 0 };
         materials[mi].fuzz = 0.0; materials[mi].ref_idx = 1.0; materials[mi].material_type = 0;
-        materials[mi].albedo = [1.0, 1.0, 0.0, 0.0]; // bright yellow
+        match name.as_str() {
+            "神之眼" => { materials[mi].material_type = 1; materials[mi].fuzz = 0.03; materials[mi].albedo = [0.3, 0.65, 0.85, 0.0]; }
+            "配飾" => { materials[mi].material_type = 1; materials[mi].fuzz = 0.08; }
+            "髮饰" => { materials[mi].material_type = 1; materials[mi].fuzz = 0.10; }
+            "帶" | "帶內" => { materials[mi].material_type = 1; materials[mi].fuzz = 0.04; }
+            "服" => { materials[mi].material_type = 0; materials[mi].fuzz = 0.18; }
+            "褲" => { materials[mi].material_type = 0; materials[mi].fuzz = 0.18; }
+            "新規" => { materials[mi].material_type = 0; materials[mi].fuzz = 0.15; }
+            "裙" => { materials[mi].material_type = 0; materials[mi].fuzz = 0.25; materials[mi].albedo = [0.95, 0.55, 0.60, 0.0]; }  // sakura pink
+            "蝴蝶結" => { materials[mi].material_type = 1; materials[mi].fuzz = 0.15; }
+            "結1" => { materials[mi].material_type = 1; materials[mi].fuzz = 0.10; }
+            "肌" | "面1" | "面2" | "二重" => { materials[mi].material_type = 0; materials[mi].albedo = [0.95, 0.75, 0.65, 0.0]; }
+            "髮" | "前髮" | "髮spa+" | "前髮spa+" => { materials[mi].material_type = 0; materials[mi].albedo = [0.80, 0.85, 0.95, 0.0]; }
+            "白目" => { materials[mi].material_type = 0; materials[mi].albedo = [1.0, 1.0, 1.0, 0.0]; }
+            "目" => { materials[mi].material_type = 2; materials[mi].ref_idx = 1.45; materials[mi].fuzz = 0.35; materials[mi].albedo = [0.12, 0.15, 0.42, 0.0]; }
+            "星目" => { materials[mi].material_type = 2; materials[mi].ref_idx = 1.45; materials[mi].fuzz = 0.80; materials[mi].albedo = [0.03, 0.03, 0.06, 0.0]; }
+            _ => {}
+        }
     }
 
     // Compute character bounding box + place at scene centre
@@ -1173,7 +1256,7 @@ fn create_scene_environment(
         .max(bmax[2] - bmin[2]);
     // Scale character 3x around its centre
     let char_cy = (cmin[1] + cmax[1]) / 2.0;
-    let scale = 3.0f32;
+    let scale = 2.0f32;
     for t in char_tris.iter_mut() {
         t.v0[0] = char_cx + (t.v0[0] - char_cx) * scale;
         t.v0[1] = char_cy + (t.v0[1] - char_cy) * scale;
@@ -1190,8 +1273,8 @@ fn create_scene_environment(
     for t in &char_tris { for a in 0..3 { cmin[a]=cmin[a].min(t.v0[a]).min(t.v1[a]).min(t.v2[a]); cmax[a]=cmax[a].max(t.v0[a]).max(t.v1[a]).max(t.v2[a]); } }
     // Place at courtyard centre, standing on ground
     let char_offset_x = cx - (cmin[0]+cmax[0])/2.0 ;
-    let char_offset_y = bmin[1] - cmin[1] + 41.5;
-    let char_offset_z = cz - (cmin[2]+cmax[2])/2.0;
+    let char_offset_y = bmin[1] - cmin[1] + 37.5;
+    let char_offset_z = cz - (cmin[2]+cmax[2])/2.0 + 22.0;
     for t in char_tris.iter_mut() {
         t.v0[0] += char_offset_x; t.v0[1] += char_offset_y; t.v0[2] += char_offset_z;
         t.v1[0] += char_offset_x; t.v1[1] += char_offset_y; t.v1[2] += char_offset_z;
@@ -1222,6 +1305,7 @@ fn create_scene_environment(
         materials.push(GpuMaterial {
             albedo: [albedo[0], albedo[1], albedo[2], 0.0],
             fuzz: 0.0, ref_idx: 1.0, material_type: 3, tex_id: 0,
+            emission_tex_id: 0, _pad_mat: [0; 3],
         });
         let idx = spheres.len() as u32;
         spheres.push(GpuSphere {
@@ -1233,9 +1317,11 @@ fn create_scene_environment(
 
     let s = model_size;
 
-    // Single sun — fixed position behind scene
-    add_light([cx + 300.0, 40.0, cz + 300.0],
-              20.0, [2000.0, 1400.0, 600.0]);  // 4× radius, 10× brightness
+    // Single sun — matches camera azimuth
+    let sun_yaw = sun_yaw_deg.to_radians();
+    let sun_dist = 400.0;
+    add_light([cx + sun_dist * sun_yaw.sin(), 40.0, cz + sun_dist * sun_yaw.cos()],
+              20.0, [2000.0, 1400.0, 600.0]);
 
     println!(
         "Scene: {} spheres, {} triangles, {} materials, {} lights",
@@ -1334,11 +1420,13 @@ async fn run() {
 
     // Scene-mode: smaller output for faster iteration
     if render_scene {
-        image_width = 6144;
-        image_height = 6144;
-        samples_per_pixel = 246;
+        image_width = 7680;
+        image_height = 4320;
+        samples_per_pixel = 256;
         max_depth = 50;
     }
+
+    let scene_yaw_deg: f32 = 4.5;
 
     let (mut spheres, triangles, mut materials, lights, tex_info, tex_data_vec) = if render_scene {
         let scene_path = if Path::new("../assets/Scene.obj").exists() {
@@ -1350,7 +1438,7 @@ async fn run() {
             return;
         };
         println!("━━━ Rendering SCENE: {} ━━━", scene_path);
-        create_scene_environment(scene_path)
+        create_scene_environment(scene_path, scene_yaw_deg)
     } else {
         let obj_path = if Path::new("../assets/ayaka.obj").exists() {
             Some("../assets/ayaka.obj")
@@ -1395,17 +1483,14 @@ async fn run() {
                 .max(bmax[2] - bmin[2]);
             // FOV 40° — natural architectural perspective
             // dist so that model_size occupies 90% of the vertical frame
-            cam_vfov = 40.0;
+            cam_vfov = 20.0;
             let half_h = (cam_vfov / 2.0).to_radians().tan();
-            let desired_visible = model_size / 1.2; // closer = larger denominator
+            let desired_visible = model_size / 7.0; // 90% of frame = 1/7 of height
             let dist = (desired_visible / 2.0) / half_h;
-            // Elevated 25° front view
-            let angle = 25.0_f32.to_radians();
-            let elev = model_size * 0.4;
-            let yaw = 0.0_f32.to_radians();
+            let yaw = scene_yaw_deg.to_radians();
             cam_origin = [
                 cx + dist * yaw.sin(),
-                bmin[1] + model_size * 0.4 + 40.0,  // slightly elevated
+                bmin[1] + model_size * 0.4 - 5.0,
                 cz + dist * yaw.cos(),
             ];
             cam_lookat = [cx, bmin[1] + model_size * 0.4, cz];
@@ -1487,7 +1572,7 @@ async fn run() {
 
     let camera = GpuCamera::new(
         cam_origin, cam_lookat, [0.0, 1.0, 0.0],
-        cam_vfov, 1.0, 0.0, 10.0,
+        cam_vfov, image_width as f32 / image_height as f32, 0.0, 10.0,
     );
 
     let output_size = (image_width * image_height) as u64;

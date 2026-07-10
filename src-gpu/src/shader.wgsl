@@ -43,6 +43,10 @@ struct Material {
     ref_idx: f32,
     material_type: u32,
     tex_id: u32,
+    emission_tex_id: u32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
 }
 
 struct GpuParticle {
@@ -502,6 +506,197 @@ fn sky_color(rd: vec3<f32>) -> vec3<f32> {
     return sky_base * 0.25 + glow_wide * 0.35 + sun_disk;
 }
 
+// ── Coordinate Axis + 3D Grid Rendering ──
+// Thick yellow main axes + thinner grid lines on XZ/XY/YZ planes every 5 units
+const SHOW_AXES: bool = false;
+const AXIS_RADIUS: f32 = 0.18;
+const AXIS_EXTENT: f32 = 100000.0;
+const TICK_INTERVAL: f32 = 5.0;
+const GRID_RADIUS: f32 = 0.04;
+const GRID_EXTENT: f32 = 250.0;
+const AXIS_COLOR: vec3<f32> = vec3<f32>(1.0, 0.9, 0.0);
+
+// Ray vs finite cylinder intersection. Returns t of nearest hit, or tmax on miss.
+fn ray_cylinder_hit(
+    ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32,
+    cyl_a: vec3<f32>, cyl_b: vec3<f32>, radius: f32
+) -> f32 {
+    let ab = cyl_b - cyl_a;
+    let ab_len = length(ab);
+    let axis_dir = ab / ab_len;
+
+    let ao = ro - cyl_a;
+    let aoxd = cross(ao, axis_dir);
+    let rdxd = cross(rd, axis_dir);
+    let denom = dot(rdxd, rdxd);
+
+    if denom < 1e-12 { return tmax; }
+
+    let A = denom;
+    let B = 2.0 * dot(rdxd, aoxd);
+    let C = dot(aoxd, aoxd) - radius * radius;
+
+    let disc = B * B - 4.0 * A * C;
+    if disc < 0.0 { return tmax; }
+
+    let sqrt_disc = sqrt(disc);
+    let t0 = (-B - sqrt_disc) / (2.0 * A);
+    let t1 = (-B + sqrt_disc) / (2.0 * A);
+
+    for (var i = 0u; i < 2u; i++) {
+        let t = select(t0, t1, i == 1u);
+        if t < tmin || t > tmax { continue; }
+        let pt = ro + t * rd;
+        let proj = dot(pt - cyl_a, axis_dir);
+        if proj >= -0.001 && proj <= ab_len + 0.001 {
+            return t;
+        }
+    }
+    return tmax;
+}
+
+// ── 3D grid on coordinate planes ──
+// For each plane (XZ y=0, XY z=0, YZ x=0), intersect the ray with the plane
+// and check whether the hit lies on a grid line.
+
+fn scalar_coord(v: vec3<f32>, axis: u32) -> f32 {
+    if axis == 1u { return v.y; }
+    else if axis == 2u { return v.z; }
+    return v.x;
+}
+
+// Check one set of grid lines on a coordinate plane.
+// fixed_axis: 0→YZ plane (x=0), 1→XZ plane (y=0), 2→XY plane (z=0)
+fn check_grid_plane(
+    ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32,
+    fixed_axis: u32
+) -> f32 {
+    let denom = scalar_coord(rd, fixed_axis);
+    if abs(denom) < 1e-8 { return tmax; }
+
+    let t_plane = -scalar_coord(ro, fixed_axis) / denom;
+    if t_plane < tmin || t_plane > tmax { return tmax; }
+
+    let p = ro + t_plane * rd;
+
+    // Determine the two free axes for this plane
+    var au: u32; var av: u32;
+    if fixed_axis == 0u { au = 1u; av = 2u; }        // YZ plane → Y,Z
+    else if fixed_axis == 1u { au = 0u; av = 2u; }    // XZ plane → X,Z
+    else { au = 0u; av = 1u; }                         // XY plane → X,Y
+
+    let pu = scalar_coord(p, au);
+    let pv = scalar_coord(p, av);
+
+    // Skip if outside grid extent
+    if abs(pu) > GRID_EXTENT || abs(pv) > GRID_EXTENT { return tmax; }
+
+    // Distance to nearest grid line in each direction
+    let du = abs(pv - round(pv / TICK_INTERVAL) * TICK_INTERVAL);
+    let dv = abs(pu - round(pu / TICK_INTERVAL) * TICK_INTERVAL);
+
+    if min(du, dv) < GRID_RADIUS {
+        return t_plane;
+    }
+    return tmax;
+}
+
+// Tick marks on main axes (short perpendicular cylinders at each interval)
+fn check_axis_ticks(
+    ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32,
+    axis: u32
+) -> f32 {
+    var result = tmax;
+    let tick_half: f32 = 1.2;
+    let tick_radius: f32 = 0.10;
+
+    let t_span = tmax - tmin;
+    let mid_t = (tmin + tmax) * 0.5;
+    let mid_pt = ro + mid_t * rd;
+
+    var mid_coord: f32;
+    var tick_dir: vec3<f32>;
+    var origin_mask: vec3<f32>;
+
+    if axis == 0u {
+        mid_coord = mid_pt.x;
+        tick_dir = vec3<f32>(0.0, 1.0, 0.0);
+        origin_mask = vec3<f32>(1.0, 0.0, 0.0);
+    } else if axis == 1u {
+        mid_coord = mid_pt.y;
+        tick_dir = vec3<f32>(1.0, 0.0, 0.0);
+        origin_mask = vec3<f32>(0.0, 1.0, 0.0);
+    } else {
+        mid_coord = mid_pt.z;
+        tick_dir = vec3<f32>(0.0, 1.0, 0.0);
+        origin_mask = vec3<f32>(0.0, 0.0, 1.0);
+    }
+
+    let search_half = length(rd) * t_span * 0.5 + tick_half * 2.0;
+    let first = ceil((mid_coord - search_half) / TICK_INTERVAL) * TICK_INTERVAL;
+    let last  = floor((mid_coord + search_half) / TICK_INTERVAL) * TICK_INTERVAL;
+    let count = u32(max((last - first) / TICK_INTERVAL + 1.0, 0.0));
+    let max_count = min(count, 80u);
+
+    for (var i = 0u; i < max_count; i++) {
+        let tick_val = first + f32(i) * TICK_INTERVAL;
+        if abs(tick_val) < 0.001 { continue; }
+
+        let tick_center = origin_mask * tick_val;
+        let tick_start = tick_center - tick_dir * tick_half;
+        let tick_end   = tick_center + tick_dir * tick_half;
+
+        let t = ray_cylinder_hit(ro, rd, tmin, result, tick_start, tick_end, tick_radius);
+        if t < result { result = t; }
+    }
+    return result;
+}
+
+// Check all axes + grid lines against a ray. Returns t of nearest hit or tmax.
+fn hit_axes(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32) -> f32 {
+    var result = tmax;
+
+    // ── Main axes (thick cylinders) ──
+    // X axis
+    var t = ray_cylinder_hit(ro, rd, tmin, result,
+        vec3<f32>(-AXIS_EXTENT, 0.0, 0.0),
+        vec3<f32>(AXIS_EXTENT, 0.0, 0.0),
+        AXIS_RADIUS);
+    if t < result { result = t; }
+
+    // Y axis
+    t = ray_cylinder_hit(ro, rd, tmin, result,
+        vec3<f32>(0.0, -AXIS_EXTENT, 0.0),
+        vec3<f32>(0.0, AXIS_EXTENT, 0.0),
+        AXIS_RADIUS);
+    if t < result { result = t; }
+
+    // Z axis
+    t = ray_cylinder_hit(ro, rd, tmin, result,
+        vec3<f32>(0.0, 0.0, -AXIS_EXTENT),
+        vec3<f32>(0.0, 0.0, AXIS_EXTENT),
+        AXIS_RADIUS);
+    if t < result { result = t; }
+
+    // ── Tick marks on each axis ──
+    result = check_axis_ticks(ro, rd, tmin, result, 0u);
+    result = check_axis_ticks(ro, rd, tmin, result, 1u);
+    result = check_axis_ticks(ro, rd, tmin, result, 2u);
+
+    // ── 3D grid on coordinate planes ──
+    // XZ plane (ground, y=0)
+    t = check_grid_plane(ro, rd, tmin, result, 1u);
+    if t < result { result = t; }
+    // XY plane (z=0)
+    t = check_grid_plane(ro, rd, tmin, result, 2u);
+    if t < result { result = t; }
+    // YZ plane (x=0)
+    t = check_grid_plane(ro, rd, tmin, result, 0u);
+    if t < result { result = t; }
+
+    return result;
+}
+
 fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>) -> vec3<f32> {
     var col = vec3<f32>(0.0);
     var thr = vec3<f32>(1.0);
@@ -510,6 +705,14 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
 
     for (var d: u32 = 0u; d < u.max_depth; d++) {
         let hit = hit_world(ro2, rd2, 0.001, 1e30, r_time);
+
+        // Overlay coordinate axes on primary ray (toggle SHOW_AXES)
+        if SHOW_AXES && d == 0u {
+            let axis_t = hit_axes(ro2, rd2, 0.001, hit.t);
+            if axis_t < hit.t {
+                return AXIS_COLOR;
+            }
+        }
 
         if in_water {
             let sigma = vec3<f32>(0.35, 0.06, 0.025);
@@ -523,11 +726,25 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
         in_water = false;
 
         if hit.t >= 1e29 {
+            if SHOW_AXES && d == 0u {
+                let axis_t = hit_axes(ro2, rd2, 0.001, 1e30);
+                if axis_t < 1e29 {
+                    return AXIS_COLOR;
+                }
+            }
             col = col + thr * sky_color(normalize(rd2));
             break;
         }
         let mat = materials[hit.mid];
         let p = ro2 + hit.t * rd2;
+
+        // ── Weak emission from _E texture (translucent self-illumination) ──
+        if mat.emission_tex_id > 0u {
+            let emissive = sample_texture(mat.emission_tex_id, hit.uv);
+            let em_strength = 0.7;
+            col = col + thr * emissive * em_strength;
+        }
+
         let mt = mat.material_type;
 
         var use_n = hit.n;
@@ -538,9 +755,28 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
             use_fuzz = mix(0.4, 0.75, fv);
         }
         if mt == 6u {
-            let wv = wood_field(p);
+            // fuzz encodes grain direction: <0.33→Y, <0.66→X, else→Z
+            var p_grain: vec3<f32>;
+            if mat.fuzz < 0.33 {
+                p_grain = vec3<f32>(p.x, p.y * 0.12, p.z);       // Y-direction (vertical)
+            } else if mat.fuzz < 0.66 {
+                p_grain = vec3<f32>(p.x * 0.12, p.y, p.z);       // X-direction (horizontal)
+            } else {
+                p_grain = vec3<f32>(p.x, p.y, p.z * 0.12);       // Z-direction (horizontal)
+            }
+            let wv = wood_field(p_grain);
             use_n = bump_normal(p, hit.n, wv, 0.008, 0.03);
             use_fuzz = 0.70;
+        }
+        if mt == 8u {
+            // Linen: subtle weave noise, fully diffuse
+            let weave = fbm(p * 15.0 + vec3<f32>(0.7, 1.3, 0.3), 2u);
+            use_n = bump_normal(p, hit.n, weave, 0.010, 0.02);
+            use_fuzz = 0.85;
+        }
+        if mt == 9u {
+            // Smooth slab: no bump, rough specular only
+            use_fuzz = 0.30;
         }
 
         if mt == 3u {
@@ -601,15 +837,15 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
             let ct = abs(dot(ud, hit.n));
             let r0 = (mat.ref_idx - 1.0) / (mat.ref_idx + 1.0);
             let r02_phys = r0 * r0;
-            let r02 = r02_phys;            // physical Fresnel only (no boost)
+            let r02 = r02_phys * 1.5;     // polished wood gloss
             let fresnel = r02 + (1.0 - r02) * pow(1.0 - ct, 5.0);
             if rand(seed) < fresnel {
                 let refl = reflect(ud, hit.n);
                 let sdir = refl + coat_rough * rand_unit_vec(seed);
                 if dot(sdir, hit.n) <= 0.0 { break; }
-                rd2 = sdir; thr = thr * mix(vec3<f32>(1.0), base_color, 0.88); ro2 = p + hit.n * 0.002; continue;
+                rd2 = sdir; thr = thr * mix(vec3<f32>(1.0), base_color, 0.70); ro2 = p + hit.n * 0.002; continue;
             }
-            thr = thr * 0.92;  // minimal darkening — let the wood texture dominate
+            thr = thr * 0.88;
         }
         if mt == 7u {
             if rand(seed) < 0.15 {
@@ -787,11 +1023,11 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
             var sss_thr = vec3<f32>(1.0);
             var sss_pos = p;
             var sss_dir2 = sdir;
-            for (var ss: u32 = 0u; ss < 2u; ss++) {
-                let d_free = -log(max(rand(seed), 0.001)) / 14.0;
+            for (var ss: u32 = 0u; ss < 4u; ss++) {
+                let d_free = -log(max(rand(seed), 0.001)) / 12.0;
                 sss_pos = sss_pos + d_free * sss_dir2;
-                sss_thr *= exp(-vec3<f32>(0.15, 2.0, 4.0) * d_free);
-                sss_dir2 = sample_hg(sss_dir2, 0.5, seed);
+                sss_thr *= exp(-vec3<f32>(0.3, 2.5, 5.0) * d_free);
+                sss_dir2 = sample_hg(sss_dir2, 0.6, seed);
             }
             sdir = normalize(sss_dir2);
             thr = thr * sss_thr * transmission_color;

@@ -1,4 +1,4 @@
-use crate::vec3::{Vec3, dot, unit_vector};
+use crate::vec3::{Point3, Vec3, dot, unit_vector};
 
 pub struct Perlin {
     ranvec: [Vec3; 256],
