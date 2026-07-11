@@ -12,6 +12,7 @@
 !LICENSE
 !Cargo.toml
 !README.md
+!report/**
 !hint.txt
 !rust-toolchain.toml
 !.github/
