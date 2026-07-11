@@ -9,6 +9,9 @@
 !src-gpu/**
 !LICENSE
 !Cargo.toml
+!README.md
+!report/
+!report/**
 !hint.txt
 !rust-toolchain.toml
 !.github/
