@@ -14,6 +14,9 @@ pub enum ScatterType {
         attenuation: Color,
         scattered_ray: Ray,
     },
+    NormalVis {
+        normal: Vec3,
+    },
 }
 
 pub trait Material: Send + Sync {

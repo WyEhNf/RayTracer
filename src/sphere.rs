@@ -87,7 +87,8 @@ impl Hittable for Sphere {
     fn bounding_box(&self, time0: f64, time1: f64) -> Option<Aabb> {
         let center0 = self.center.at(time0);
         let center1 = self.center.at(time1);
-        let rvec = Vec3::new(self.radius, self.radius, self.radius);
+        let r = self.radius.abs();
+        let rvec = Vec3::new(r, r, r);
         let box0 = Aabb::new(center0 - rvec, center0 + rvec);
         let box1 = Aabb::new(center1 - rvec, center1 + rvec);
         Some(Aabb::surrounding(&box0, &box1))

@@ -40,7 +40,7 @@ use checker_texture::CheckerTexture;
 use constant_medium::ConstantMedium;
 use dielectric::Dielectric;
 use diffuse_light::DiffuseLight;
-use hittable::Hittable;
+use hittable::{HitRecord, Hittable};
 use hittable_list::HittableList;
 use instance::{FlipFace, RotateY, Translate};
 use isotropic::Isotropic;
@@ -53,6 +53,55 @@ use solid_color::SolidColor;
 use sphere::Sphere;
 use vec3::{Color, Point3, Vec3};
 use crate::utils::{random_double, random_range};
+use crate::vec3::unit_vector;
+
+// ===== Book 1 §9: exact reproduction of the chapter's final ray_color =====
+fn random_unit_vector_b1() -> Vec3 {
+    loop {
+        let p = Vec3::new(random_range(-1.0, 1.0), random_range(-1.0, 1.0), random_range(-1.0, 1.0));
+        let lensq = p.length_squared();
+        if lensq > 1e-160 && lensq <= 1.0 {
+            return p / lensq.sqrt();
+        }
+    }
+}
+
+fn ray_color_b1(ray: &Ray, world: &dyn Hittable, reflectance: f64, depth: u32) -> Color {
+    if depth == 0 { return Color::new(0.0, 0.0, 0.0); }
+    if let Some(rec) = world.hit(ray, 0.001, f64::INFINITY) {
+        let direction = rec.normal + random_unit_vector_b1();
+        return reflectance * ray_color_b1(&Ray::new(rec.p, direction), world, reflectance, depth - 1);
+    }
+    let unit_direction = unit_vector(&ray.direction);
+    let a = 0.5 * (unit_direction.y + 1.0);
+    (1.0 - a) * Color::new(1.0, 1.0, 1.0) + a * Color::new(0.5, 0.7, 1.0)
+}
+
+fn render_b1(world: &dyn Hittable, cam: &Camera, image_width: u32, aspect_ratio: f64,
+             samples_per_pixel: u32, max_depth: u32, reflectance: f64, output_path: &str) {
+    let image_height = ((image_width as f64 / aspect_ratio) as u32).max(1);
+    let prefix = std::path::Path::new(output_path).parent().unwrap();
+    std::fs::create_dir_all(prefix).expect("Cannot create dirs");
+    let mut img: RgbImage = ImageBuffer::new(image_width, image_height);
+    let progress = ProgressBar::new(image_height as u64);
+    println!("  {}x{} {}spp depth={} refl={}", image_width, image_height, samples_per_pixel, max_depth, reflectance);
+    for j in (0..image_height).rev() {
+        for i in 0..image_width {
+            let mut pixel_color = Color::new(0.0, 0.0, 0.0);
+            for _ in 0..samples_per_pixel {
+                let u = (i as f64 + random_double()) / (image_width - 1) as f64;
+                let v = ((image_height - 1 - j) as f64 + random_double()) / (image_height - 1) as f64;
+                let ray = cam.get_ray(u, v);
+                pixel_color += ray_color_b1(&ray, world, reflectance, max_depth);
+            }
+            write_color(img.get_pixel_mut(i, j), &pixel_color, samples_per_pixel);
+        }
+        progress.inc(1);
+    }
+    progress.finish();
+    img.save(output_path).expect("Cannot save");
+    println!("  -> {}", style(output_path).yellow());
+}
 
 fn ray_color(
     ray: &Ray,
@@ -65,20 +114,33 @@ fn ray_color(
     if let Some(rec) = world.hit(ray, 0.001, f64::INFINITY) {
         let emitted = rec.material.emitted(rec.u, rec.v, &rec.p);
         match rec.material.scatter(ray, &rec) {
+            Some(ScatterType::NormalVis { normal }) => {
+                return 0.5 * Color::new(normal.x + 1.0, normal.y + 1.0, normal.z + 1.0);
+            }
             Some(ScatterType::Specular { attenuation, scattered_ray }) => {
                 return emitted + attenuation * ray_color(&scattered_ray, world, Arc::clone(&lights), depth - 1);
             }
             Some(ScatterType::Diffuse { attenuation, pdf }) => {
-                let light_pdf = Arc::new(HittablePdf::new(rec.p, Arc::clone(&lights)));
-                let mixture = Arc::new(MixturePdf::new(Arc::clone(&pdf) as Arc<dyn Pdf>, light_pdf));
-                let scattered_dir = mixture.generate();
-                let pdf_val = mixture.value(&scattered_dir);
-                if pdf_val < 1e-12 { return emitted; }
-                let scattered_ray = Ray::new_at_time(rec.p, scattered_dir, ray.time);
-                let scattering_pdf = rec.material.scattering_pdf(ray, &rec, &scattered_dir);
-                let brdf_color = attenuation * scattering_pdf
-                    * ray_color(&scattered_ray, world, Arc::clone(&lights), depth - 1) / pdf_val;
-                return emitted + brdf_color;
+                let has_lights = lights.bounding_box(0.0, 0.0).is_some();
+                if has_lights {
+                    let light_pdf = Arc::new(HittablePdf::new(rec.p, Arc::clone(&lights)));
+                    let mixture = Arc::new(MixturePdf::new(Arc::clone(&pdf) as Arc<dyn Pdf>, light_pdf));
+                    let scattered_dir = mixture.generate();
+                    let pdf_val = mixture.value(&scattered_dir);
+                    if pdf_val < 1e-12 { return emitted; }
+                    let scattered_ray = Ray::new_at_time(rec.p, scattered_dir, ray.time);
+                    let scattering_pdf = rec.material.scattering_pdf(ray, &rec, &scattered_dir);
+                    let brdf_color = attenuation * scattering_pdf
+                        * ray_color(&scattered_ray, world, Arc::clone(&lights), depth - 1) / pdf_val;
+                    return emitted + brdf_color;
+                } else {
+                    let scattered_dir = pdf.generate();
+                    let scattering_pdf = rec.material.scattering_pdf(ray, &rec, &scattered_dir);
+                    if scattering_pdf < 1e-12 { return emitted; }
+                    let scattered_ray = Ray::new_at_time(rec.p, scattered_dir, ray.time);
+                    return emitted + attenuation
+                        * ray_color(&scattered_ray, world, Arc::clone(&lights), depth - 1);
+                }
             }
             None => return emitted,
         }
@@ -125,9 +187,16 @@ fn render(world: &dyn Hittable, lights: Arc<dyn Hittable>, cam: &Camera,
 // ===== BOOK 1 CHAPTER SCENES =====
 
 fn b1_ch5_surface_normals() -> (HittableList, HittableList, Camera) {
+    struct NormalMaterial;
+    impl Material for NormalMaterial {
+        fn scatter(&self, _ray: &Ray, rec: &HitRecord) -> Option<ScatterType> {
+            Some(ScatterType::NormalVis { normal: rec.normal })
+        }
+    }
     let mut world = HittableList::new();
-    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 0.0, -1.0), 0.5, Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.7, 0.3, 0.3))))))));
-    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -100.5, -1.0), 100.0, Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.8, 0.8, 0.0))))))));
+    let normal_mat: Arc<dyn Material> = Arc::new(NormalMaterial);
+    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 0.0, -1.0), 0.5, Arc::clone(&normal_mat))));
+    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -100.5, -1.0), 100.0, Arc::clone(&normal_mat))));
     let lights = HittableList::new();
     let cam = Camera::new(Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 1.0, 0.0), 90.0, 16.0/9.0, 0.0, 1.0, 0.0, 1.0);
     (world, lights, cam)
@@ -147,7 +216,7 @@ fn b1_ch9_metal() -> (HittableList, HittableList, Camera) {
     let mat_ground = Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.8, 0.8, 0.0)))));
     let mat_center = Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.7, 0.3, 0.3)))));
     let mat_left = Arc::new(Metal::new(Color::new(0.8, 0.8, 0.8), 0.3));
-    let mat_right = Arc::new(Metal::new(Color::new(0.8, 0.6, 0.2), 1.0));
+    let mat_right = Arc::new(Metal::new(Color::new(0.8, 0.6, 0.2), 0.0));
     world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -100.5, -1.0), 100.0, mat_ground)));
     world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 0.0, -1.0), 0.5, mat_center)));
     world.add(Arc::new(Sphere::new_static(Point3::new(-1.0, 0.0, -1.0), 0.5, mat_left)));
@@ -155,6 +224,18 @@ fn b1_ch9_metal() -> (HittableList, HittableList, Camera) {
     let lights = HittableList::new();
     let cam = Camera::new(Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 1.0, 0.0), 90.0, 16.0/9.0, 0.0, 1.0, 0.0, 1.0);
     (world, lights, cam)
+}
+
+fn b1_ch09_diffuse() -> (HittableList, Camera) {
+    // Book 1 §9 Diffuse Materials: two gray spheres, 50% reflectance
+    // Uses Book 1 ray_color: normal + random_unit_vector, no Materials/PDFs
+    // Gamma correction via sqrt in write_color
+    let mat: Arc<dyn Material> = Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.5, 0.5, 0.5)))));
+    let mut world = HittableList::new();
+    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 0.0, -1.0), 0.5, Arc::clone(&mat))));
+    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -100.5, -1.0), 100.0, Arc::clone(&mat))));
+    let cam = Camera::new(Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 1.0, 0.0), 90.0, 16.0/9.0, 0.0, 1.0, 0.0, 1.0);
+    (world, cam)
 }
 
 fn b1_ch10_dielectric() -> (HittableList, HittableList, Camera) {
@@ -456,10 +537,31 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let chapter = if args.len() > 1 { args[1].as_str() } else { "all" };
 
+    // Book 1: simple path tracer (no Materials/PDFs)
+    let b1_chapters: Vec<(&str, fn() -> (HittableList, Camera), u32, u32, u32, f64, &str)> = vec![
+        ("book1/ch09_r10", b1_ch09_diffuse as fn() -> _, 400, 100, 50, 0.1, "output/book1/ch09_r10.png"),
+        ("book1/ch09_r30", b1_ch09_diffuse as fn() -> _, 400, 100, 50, 0.3, "output/book1/ch09_r30.png"),
+        ("book1/ch09_r50", b1_ch09_diffuse as fn() -> _, 400, 100, 50, 0.5, "output/book1/ch09_r50.png"),
+        ("book1/ch09_r70", b1_ch09_diffuse as fn() -> _, 400, 100, 50, 0.7, "output/book1/ch09_r70.png"),
+        ("book1/ch09_r90", b1_ch09_diffuse as fn() -> _, 400, 100, 50, 0.9, "output/book1/ch09_r90.png"),
+    ];
+
+    for (name, scene_fn, width, spp, depth, reflectance, path) in &b1_chapters {
+        if chapter != "all" && *name != chapter { continue; }
+        println!("\n=== {} ===", style(name).cyan());
+        let (world, cam) = scene_fn();
+        let mut objects: Vec<Arc<dyn Hittable>> = Vec::new();
+        let mut world_mut = world;
+        std::mem::swap(&mut world_mut.objects, &mut objects);
+        let bvh_world: Arc<dyn Hittable> = BvhNode::build(&mut objects, 0.0, 0.0);
+        render_b1(&*bvh_world, &cam, *width, 16.0/9.0, *spp, *depth, *reflectance, path);
+    }
+
+    // Book 2: full path tracer with Materials/PDFs/lights
     let all_chapters: Vec<(&str, fn() -> (HittableList, HittableList, Camera), u32, u32, u32, &str)> = vec![
         ("book1/ch05_normals",      b1_ch5_surface_normals as fn() -> _,  1024, 100, 50, "output/book1/ch05_normals.png"),
         ("book1/ch06_diffuse",      b1_ch6_7_diffuse as fn() -> _,      1024, 100, 50, "output/book1/ch06_diffuse.png"),
-        ("book1/ch09_metal",        b1_ch9_metal as fn() -> _,          1024, 100, 50, "output/book1/ch09_metal.png"),
+        ("book1/ch10_metal",        b1_ch9_metal as fn() -> _,          1024, 100, 50, "output/book1/ch10_metal.png"),
         ("book1/ch10_dielectric",   b1_ch10_dielectric as fn() -> _,    1024, 100, 50, "output/book1/ch10_dielectric.png"),
         ("book1/ch11_camera",       b1_ch11_camera as fn() -> _,        1024, 100, 50, "output/book1/ch11_camera.png"),
         ("book1/ch12_defocus",      b1_ch12_defocus as fn() -> _,       1024, 100, 50, "output/book1/ch12_defocus.png"),

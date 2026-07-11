@@ -7,6 +7,8 @@
 !src-gpu/
 !src-gpu/src/
 !src-gpu/**
+!output/
+!output/**
 !LICENSE
 !Cargo.toml
 !README.md
@@ -20,5 +22,4 @@ debug/
 Cargo.lock
 **/*.rs.bk
 *.pdb
-output/
 .idea/
