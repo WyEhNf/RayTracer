@@ -21,6 +21,7 @@
 target/
 debug/
 Cargo.lock
+*.pdf
 **/*.rs.bk
 *.pdb
 .idea/
