@@ -807,6 +807,7 @@ fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Ve
         GpuSphere { center: [4.0, 1.0, 0.0, 0.0], radius: 1.0, material_id: 2, _pad: [0; 2] },
     ];
 
+    // ── Book1 final: per-sphere random materials (matching original book) ──
     for a in -11..11 {
         for b in -11..11 {
             let choose_mat = vec3::random_double();
@@ -820,10 +821,29 @@ fn create_scene(obj_path: Option<&str>) -> (Vec<GpuSphere>, Vec<GpuTriangle>, Ve
             let dz = center[2] - 0.0;
             if (dx * dx + dz * dz).sqrt() > 0.9 {
                 let mat_id = if choose_mat < 0.8 {
-                    0
+                    // Lambertian: albedo = color::random() * color::random()
+                    let r1 = vec3::random_double(); let r2 = vec3::random_double();
+                    let r3 = vec3::random_double(); let r4 = vec3::random_double();
+                    let r5 = vec3::random_double(); let r6 = vec3::random_double();
+                    let id = materials.len() as u32;
+                    materials.push(GpuMaterial {
+                        albedo: [r1*r2, r3*r4, r5*r6, 0.0], fuzz: 0.0, ref_idx: 1.0,
+                        material_type: 0, tex_id: 0, emission_tex_id: 0, _pad_mat: [0; 3],
+                    });
+                    id
                 } else if choose_mat < 0.95 {
-                    2
+                    // Metal: albedo = 0.5 + 0.5*random, fuzz = 0.5*random
+                    let r1 = vec3::random_double(); let r2 = vec3::random_double();
+                    let r3 = vec3::random_double();
+                    let id = materials.len() as u32;
+                    materials.push(GpuMaterial {
+                        albedo: [0.5+r1*0.5, 0.5+r2*0.5, 0.5+r3*0.5, 0.0],
+                        fuzz: vec3::random_double() * 0.5, ref_idx: 1.0,
+                        material_type: 1, tex_id: 0, emission_tex_id: 0, _pad_mat: [0; 3],
+                    });
+                    id
                 } else {
+                    // Glass: shared material 3 (ref_idx=1.5)
                     3
                 };
                 spheres.push(GpuSphere {
@@ -1079,6 +1099,55 @@ fn generate_petal_particles(
     }
 
     println!("Generated {} petal particles ({} bokeh)", count + bokeh_count, bokeh_count);
+    (particles, spheres)
+}
+
+// ── Rain particles (misty drizzle) ──
+fn generate_rain(
+    bmin: [f32; 3], bmax: [f32; 3],
+    material_id: u32,
+) -> (Vec<GpuParticle>, Vec<GpuSphere>) {
+    use vec3::random_double;
+    let mut particles: Vec<GpuParticle> = Vec::new();
+    let mut spheres: Vec<GpuSphere> = Vec::new();
+
+    let count = 6000u32;
+    let shutter = 0.04f32;
+
+    let rx = bmax[0] - bmin[0];
+    let rz = bmax[2] - bmin[2];
+    let ry = bmax[1] - bmin[1];
+
+    for _i in 0..count {
+        let px = bmin[0] - rx * 0.3 + random_double() * rx * 1.6;
+        let py = bmin[1] - ry * 0.1 + random_double() * ry * 1.3;
+        let pz = bmin[2] - rz * 0.3 + random_double() * rz * 1.6;
+
+        let fall_speed = 35.0 + random_double() * 25.0;
+        let fall_dist = fall_speed * shutter;
+        let wind_x = (random_double() - 0.5) * 1.2;
+        let wind_z = (random_double() - 0.5) * 1.2;
+
+        let radius = 0.025 + random_double() * 0.035;
+
+        let p0x = px; let p0y = py; let p0z = pz;
+        let p1x = px + wind_x; let p1y = py - fall_dist; let p1z = pz + wind_z;
+
+        let mid_x = (p0x + p1x) * 0.5; let mid_y = (p0y + p1y) * 0.5; let mid_z = (p0z + p1z) * 0.5;
+        let sweep = ((p1x-p0x).powi(2) + (p1y-p0y).powi(2) + (p1z-p0z).powi(2)).sqrt();
+
+        particles.push(GpuParticle {
+            pos_t0: [p0x, p0y, p0z, 0.0], pos_t1: [p1x, p1y, p1z, 0.0],
+            radius, material_id, _pad: [0; 2],
+        });
+        spheres.push(GpuSphere {
+            center: [mid_x, mid_y, mid_z, 0.0],
+            radius: radius + sweep * 0.5,
+            material_id, _pad: [0; 2],
+        });
+    }
+
+    println!("Generated {} rain particles", count);
     (particles, spheres)
 }
 
@@ -1409,20 +1478,28 @@ async fn run() {
         source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
     });
 
-    // ── CLI: "cargo run -- scene" renders the shrine, default = character ──
+    // ── CLI: "cargo run -- scene" renders shrine, "book" = classic random spheres ──
     let args: Vec<String> = std::env::args().collect();
     let render_scene = args.len() > 1 && args[1] == "scene";
+    let render_book = args.len() > 1 && args[1] == "book";
 
-    let mut image_width: u32 = 6400;
-    let mut image_height: u32 = 6400;
-    let mut samples_per_pixel: u32 = 200;
+    let mut image_width: u32 = 1024;
+    let mut image_height: u32 = 1024;
+    let mut samples_per_pixel: u32 = 50;
     let mut max_depth: u32 = 20;
 
+    // Book-mode: 16:9, max_depth=50 (matching original book)
+    if render_book {
+        image_width = 1024;
+        image_height = 576;
+        samples_per_pixel = 50;
+        max_depth = 50;
+    }
     // Scene-mode: smaller output for faster iteration
     if render_scene {
-        image_width = 7680;
-        image_height = 4320;
-        samples_per_pixel = 256;
+        image_width = 1280;
+        image_height = 720;
+        samples_per_pixel = 128;
         max_depth = 50;
     }
 
@@ -1439,6 +1516,9 @@ async fn run() {
         };
         println!("━━━ Rendering SCENE: {} ━━━", scene_path);
         create_scene_environment(scene_path, scene_yaw_deg)
+    } else if render_book {
+        println!("━━━ Rendering BOOK (classic random spheres) ━━━");
+        create_scene(None)
     } else {
         let obj_path = if Path::new("../assets/ayaka.obj").exists() {
             Some("../assets/ayaka.obj")
@@ -1527,14 +1607,35 @@ async fn run() {
         return;
     }
 
-    // ── Generate petal particles (DISABLED) ──
-    let particle_count: u32 = 0;
-    let particle_offset: u32 = spheres.len() as u32;
-    let particle_vec: Vec<GpuParticle> = Vec::new();
-    // let petal_mat_id = materials.len() as u32;
-    // materials.push(GpuMaterial { ... });
-    // let (particle_vec, particle_spheres) = generate_petal_particles(&use_triangles, petal_mat_id);
-    // spheres.extend(particle_spheres);
+    // ── Rain particles (scene mode) or disabled ──
+    let particle_count: u32;
+    let particle_offset: u32;
+    let particle_vec: Vec<GpuParticle>;
+
+    if render_scene {
+        let mut rbmin = [f32::MAX; 3];
+        let mut rbmax = [f32::MIN; 3];
+        for t in &triangles {
+            for a in 0..3 {
+                rbmin[a] = rbmin[a].min(t.v0[a]).min(t.v1[a]).min(t.v2[a]);
+                rbmax[a] = rbmax[a].max(t.v0[a]).max(t.v1[a]).max(t.v2[a]);
+            }
+        }
+        let rain_mat_id = materials.len() as u32;
+        materials.push(GpuMaterial {
+            albedo: [0.75, 0.78, 0.82, 0.0], fuzz: 0.9, ref_idx: 1.02,
+            material_type: 2, tex_id: 0, emission_tex_id: 0, _pad_mat: [0; 3],
+        });
+        let (pvec, psph) = generate_rain(rbmin, rbmax, rain_mat_id);
+        particle_offset = spheres.len() as u32;
+        spheres.extend(psph);
+        particle_count = pvec.len() as u32;
+        particle_vec = pvec;
+    } else {
+        particle_count = 0;
+        particle_offset = spheres.len() as u32;
+        particle_vec = Vec::new();
+    }
 
     let mut final_spheres = spheres.clone();
     let mut final_tris = use_triangles.clone();
@@ -1570,9 +1671,10 @@ async fn run() {
         image_width, image_height, samples_per_pixel, spheres.len(), triangles.len(), final_bvh.len()
     );
 
+    let defocus_angle = if render_book { 0.6 } else { 0.0 };
     let camera = GpuCamera::new(
         cam_origin, cam_lookat, [0.0, 1.0, 0.0],
-        cam_vfov, image_width as f32 / image_height as f32, 0.0, 10.0,
+        cam_vfov, image_width as f32 / image_height as f32, defocus_angle, 10.0,
     );
 
     let output_size = (image_width * image_height) as u64;
@@ -1639,9 +1741,10 @@ async fn run() {
         contents: bytemuck::cast_slice(&final_bvh),
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let light_slice: &[u32] = if lights.is_empty() { &[0u32] } else { &lights };
     let light_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Light Buffer"),
-        contents: bytemuck::cast_slice(&lights),
+        contents: bytemuck::cast_slice(light_slice),
         usage: wgpu::BufferUsages::STORAGE,
     });
 

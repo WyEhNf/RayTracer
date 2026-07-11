@@ -226,9 +226,15 @@ fn b1_ch13_final() -> (HittableList, HittableList, Camera) {
 fn b2_ch1_motion_blur() -> (HittableList, HittableList, Camera) {
     let mut world = HittableList::new();
     world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -100.5, -1.0), 100.0, Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.8, 0.8, 0.0))))))));
-    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 0.0, -1.0), 0.5, Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.1, 0.2, 0.5))))))));
     world.add(Arc::new(Sphere::new_static(Point3::new(-1.0, 0.0, -1.0), 0.5, Arc::new(Dielectric::new(1.5)))));
     world.add(Arc::new(Sphere::new_static(Point3::new(1.0, 0.0, -1.0), 0.5, Arc::new(Metal::new(Color::new(0.8, 0.6, 0.2), 0.0)))));
+    // Moving sphere: center → center+right, motion blurred
+    world.add(Arc::new(Sphere::new_moving(
+        Point3::new(0.0, 0.0, -1.0),
+        Point3::new(0.5, 0.0, -1.0),
+        0.5,
+        Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.1, 0.2, 0.5))))),
+    )));
     let lights = HittableList::new();
     let cam = Camera::new(Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 1.0, 0.0), 90.0, 16.0/9.0, 0.0, 1.0, 0.0, 1.0);
     (world, lights, cam)
@@ -241,7 +247,7 @@ fn b2_ch2_bvh() -> (HittableList, HittableList, Camera) {
 
 fn b2_ch3_textures() -> (HittableList, HittableList, Camera) {
     let mut world = HittableList::new();
-    let checker = Arc::new(Lambertian::new(Arc::new(CheckerTexture::new(0.8, Arc::new(SolidColor::new(Color::new(0.2, 0.3, 0.1))), Arc::new(SolidColor::new(Color::new(0.9, 0.9, 0.9)))))));
+    let checker = Arc::new(Lambertian::new(Arc::new(CheckerTexture::new(0.2, Arc::new(SolidColor::new(Color::new(0.2, 0.3, 0.1))), Arc::new(SolidColor::new(Color::new(0.9, 0.9, 0.9)))))));
     world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -10.0, 0.0), 10.0, Arc::clone(&checker) as Arc<dyn Material>)));
     world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 10.0, 0.0), 10.0, checker)));
     let lights = HittableList::new();
@@ -335,7 +341,7 @@ fn b2_ch8_volumes() -> (HittableList, HittableList, Camera) {
     let box2 = Arc::new(RotateY::new(box2, -18.0));
     let box2 = Arc::new(Translate::new(box2, Vec3::new(130.0,0.0,65.0)));
     world.add(Arc::new(ConstantMedium::new(box2, 0.01, Arc::new(Isotropic::new(Arc::new(SolidColor::new(Color::new(0.95,0.95,0.95))))))));
-    let cam = Camera::new(Point3::new(478.0, 278.0, -600.0), Point3::new(278.0, 278.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 40.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    let cam = Camera::new(Point3::new(278.0, 278.0, -800.0), Point3::new(278.0, 278.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 40.0, 1.0, 0.0, 1.0, 0.0, 1.0);
     (world, lights, cam)
 }
 
@@ -353,12 +359,22 @@ fn b2_ch5_image() -> (HittableList, HittableList, Camera) {
 }
 
 fn b2_ch6_lights() -> (HittableList, HittableList, Camera) {
+    use crate::perlin::Perlin;
     use crate::rect::XyRect;
+    use crate::texture::Texture;
+    struct NoiseTexture { scale: f64, noise: Perlin }
+    impl NoiseTexture { fn new(s: f64) -> Self { Self { scale: s, noise: Perlin::new() } } }
+    impl Texture for NoiseTexture {
+        fn value(&self, _u: f64, _v: f64, p: &Point3) -> Color {
+            Color::new(1.0,1.0,1.0) * 0.5 * (1.0 + (self.scale * p.z + 10.0 * self.noise.turb(p, 7)).sin())
+        }
+    }
     let mut world = HittableList::new();
     let mut lights = HittableList::new();
-    let perlin_tex = Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.5, 0.5, 0.5)))));
-    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -1000.0, 0.0), 1000.0, Arc::clone(&perlin_tex) as Arc<dyn Material>)));
-    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 2.0, 0.0), 2.0, Arc::clone(&perlin_tex) as Arc<dyn Material>)));
+    let noise_tex = Arc::new(NoiseTexture::new(4.0));
+    let noise_mat: Arc<dyn Material> = Arc::new(Lambertian::new(Arc::clone(&noise_tex) as Arc<dyn Texture>));
+    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, -1000.0, 0.0), 1000.0, Arc::clone(&noise_mat))));
+    world.add(Arc::new(Sphere::new_static(Point3::new(0.0, 2.0, 0.0), 2.0, Arc::clone(&noise_mat))));
     let light_mat: Arc<dyn Material> = Arc::new(DiffuseLight::new(Arc::new(SolidColor::new(Color::new(4.0,4.0,4.0)))));
     let light_rect = Arc::new(XyRect::new(3.0, 5.0, 1.0, 3.0, -2.0, Arc::clone(&light_mat)));
     world.add(Arc::clone(&light_rect) as Arc<dyn Hittable>);
@@ -374,6 +390,17 @@ fn b2_ch7_instances() -> (HittableList, HittableList, Camera) {
     let white = Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.73, 0.73, 0.73)))));
     let green = Arc::new(Lambertian::new(Arc::new(SolidColor::new(Color::new(0.12, 0.45, 0.15)))));
     let light_mat: Arc<dyn Material> = Arc::new(DiffuseLight::new(Arc::new(SolidColor::new(Color::new(7.0,7.0,7.0)))));
+    // Cornell box walls
+    world.add(Arc::new(crate::rect::YzRect::new(0.0, 555.0, 0.0, 555.0, 555.0, Arc::clone(&green) as Arc<dyn Material>)));
+    world.add(Arc::new(crate::rect::YzRect::new(0.0, 555.0, 0.0, 555.0, 0.0, Arc::clone(&red) as Arc<dyn Material>)));
+    let light_rect = Arc::new(crate::rect::XzRect::new(213.0, 343.0, 227.0, 332.0, 554.0, Arc::clone(&light_mat)));
+    let light_rect = Arc::new(FlipFace::new(light_rect));
+    world.add(Arc::clone(&light_rect) as Arc<dyn Hittable>);
+    lights.add(light_rect);
+    world.add(Arc::new(crate::rect::XzRect::new(0.0, 555.0, 0.0, 555.0, 0.0, Arc::clone(&white) as Arc<dyn Material>)));
+    world.add(Arc::new(crate::rect::XzRect::new(0.0, 555.0, 0.0, 555.0, 555.0, Arc::clone(&white) as Arc<dyn Material>)));
+    world.add(Arc::new(crate::rect::XyRect::new(0.0, 555.0, 0.0, 555.0, 555.0, Arc::clone(&white) as Arc<dyn Material>)));
+    // Rotated boxes
     let box1 = Arc::new(crate::box_object::BoxObject::new(Point3::new(0.0,0.0,0.0), Point3::new(165.0,330.0,165.0), Arc::clone(&white) as Arc<dyn Material>));
     let box1 = Arc::new(RotateY::new(box1, 15.0));
     let box1 = Arc::new(Translate::new(box1, Vec3::new(265.0,0.0,295.0)));
@@ -382,13 +409,9 @@ fn b2_ch7_instances() -> (HittableList, HittableList, Camera) {
     let box2 = Arc::new(RotateY::new(box2, -18.0));
     let box2 = Arc::new(Translate::new(box2, Vec3::new(130.0,0.0,65.0)));
     world.add(box2);
-    let light_rect = Arc::new(crate::rect::XzRect::new(213.0, 343.0, 227.0, 332.0, 554.0, Arc::clone(&light_mat)));
-    let light_rect = Arc::new(FlipFace::new(light_rect));
-    world.add(Arc::clone(&light_rect) as Arc<dyn Hittable>);
-    lights.add(light_rect);
     world.add(Arc::new(Sphere::new_static(Point3::new(400.0, 200.0, 400.0), 50.0, Arc::clone(&red) as Arc<dyn Material>)));
     world.add(Arc::new(Sphere::new_static(Point3::new(190.0, 90.0, 190.0), 90.0, Arc::clone(&green) as Arc<dyn Material>)));
-    let cam = Camera::new(Point3::new(478.0, 278.0, -600.0), Point3::new(278.0, 278.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 40.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    let cam = Camera::new(Point3::new(278.0, 278.0, -800.0), Point3::new(278.0, 278.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 40.0, 1.0, 0.0, 1.0, 0.0, 1.0);
     (world, lights, cam)
 }
 

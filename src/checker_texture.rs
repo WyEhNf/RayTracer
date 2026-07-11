@@ -30,13 +30,13 @@ impl CheckerTexture {
 
 impl Texture for CheckerTexture {
     fn value(&self, u: f64, v: f64, p: &Point3) -> Color {
-        let sines = (self.inv_scale * p.x).sin()
-            * (self.inv_scale * p.y).sin()
-            * (self.inv_scale * p.z).sin();
-        if sines < 0.0 {
-            self.odd.value(u, v, p)
-        } else {
+        let x = (self.inv_scale * p.x).floor() as i64;
+        let y = (self.inv_scale * p.y).floor() as i64;
+        let z = (self.inv_scale * p.z).floor() as i64;
+        if (x + y + z) % 2 == 0 {
             self.even.value(u, v, p)
+        } else {
+            self.odd.value(u, v, p)
         }
     }
 }

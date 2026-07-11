@@ -697,6 +697,9 @@ fn hit_axes(ro: vec3<f32>, rd: vec3<f32>, tmin: f32, tmax: f32) -> f32 {
     return result;
 }
 
+const FOG_DENSITY: f32 = 0.00035;
+const FOG_COLOR: vec3<f32> = vec3<f32>(0.55, 0.58, 0.62);
+
 fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>) -> vec3<f32> {
     var col = vec3<f32>(0.0);
     var thr = vec3<f32>(1.0);
@@ -719,7 +722,9 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
             if hit.t < 1e29 {
                 thr = thr * exp(-sigma * min(hit.t, 20.0));
             } else {
-                col = col + thr * sky_color(normalize(rd2)) * exp(-sigma * 5.0);
+                let wsky = sky_color(normalize(rd2));
+                let wfog = 1.0 - exp(-300.0 * FOG_DENSITY);
+                col = col + thr * mix(wsky, FOG_COLOR, wfog) * exp(-sigma * 5.0);
                 break;
             }
         }
@@ -732,7 +737,9 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
                     return AXIS_COLOR;
                 }
             }
-            col = col + thr * sky_color(normalize(rd2));
+            let sky = sky_color(normalize(rd2));
+            let fog_blend = 1.0 - exp(-300.0 * FOG_DENSITY);  // distant fog
+            col = col + thr * mix(sky, FOG_COLOR, fog_blend);
             break;
         }
         let mat = materials[hit.mid];
@@ -744,6 +751,10 @@ fn ray_color(ro: vec3<f32>, rd: vec3<f32>, r_time: f32, seed: ptr<function, u32>
             let em_strength = 0.7;
             col = col + thr * emissive * em_strength;
         }
+
+        // ── Atmospheric fog attenuation ──
+        let fog_trans = exp(-hit.t * FOG_DENSITY);
+        thr = thr * fog_trans;
 
         let mt = mat.material_type;
 
