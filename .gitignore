@@ -3,14 +3,13 @@
 
 # Whitelist: only allow these paths
 !doc/
-!report/
-!report/**
 !src/
 !src-gpu/
 !src-gpu/src/
 !src-gpu/**
 !LICENSE
 !Cargo.toml
+!README.md
 !hint.txt
 !rust-toolchain.toml
 !.github/
